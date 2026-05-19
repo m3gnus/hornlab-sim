@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hornlab-sim"
+version = "0.1.0"
+description = "Canonical lumped (LEM/TMM/Helmholtz) and LEM-BEM coupling simulators for HornLab"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+bem = [
+    "hornlab-solver",
+    "hornlab-mesher",
+]
+
+[tool.setuptools.packages.find]
+include = ["hornlab_sim*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
