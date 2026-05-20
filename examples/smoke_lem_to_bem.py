@@ -1,69 +1,87 @@
-"""Smoke example: lem_to_bem on a trivial mesh.
+"""Smoke example: lem_to_bem on a generated closed sphere mesh.
 
-This builds a tiny in-memory mesh (a single triangle with a velocity-source
-tag) and runs the coupling layer end-to-end with a 3-frequency sweep, then
-prints the resulting on-axis SPL. Intended as the "does it import and run"
-smoke test, not a physically meaningful simulation.
+Builds a small closed sphere with gmsh, tags the upper hemisphere as a
+velocity source, and runs the coupling layer end-to-end with a 3-frequency
+sweep. Intended as the "does it import and run" smoke test, not a
+physically meaningful simulation.
 
 For a real Synergy/MEH workflow, see
-MEH-Lab/scripts/synergy_directivity_example.py.
+``MEH-Lab/scripts/synergy_directivity_example.py``.
+
+Requirements:
+    - ``hornlab-sim`` installed (this package)
+    - ``hornlab-solver`` and ``hornlab-mesher`` installed
+    - A working OpenCL CPU runtime for bempp-cl (the "HornLab OpenCL CPU
+      Python runtime" or an equivalent like POCL)
 """
 
 from __future__ import annotations
 
-from pathlib import Path
 import tempfile
+from pathlib import Path
 
 import numpy as np
 
 
-def _write_tiny_msh(path: Path) -> None:
-    """Write a tiny gmsh v2.2 .msh with two triangles forming a unit square.
+def _build_sphere_msh(path: Path, radius_m: float = 0.05, elem_size_m: float = 0.02) -> None:
+    """Write a closed sphere .msh with two physical groups.
 
-    Physical tag 1 = rigid (one triangle), tag 2 = velocity source (other).
-    Used only for smoke testing the coupling layer's plumbing; the BEM
-    result on a unit-square monopole-ish geometry is not physically
-    meaningful, but the solver does run.
+    Tag 1 = rigid (lower hemisphere)
+    Tag 2 = velocity source (upper hemisphere)
     """
-    content = """\
-$MeshFormat
-2.2 0 8
-$EndMeshFormat
-$PhysicalNames
-2
-2 1 "rigid"
-2 2 "source"
-$EndPhysicalNames
-$Nodes
-4
-1 0.0 0.0 0.0
-2 0.1 0.0 0.0
-3 0.0 0.1 0.0
-4 0.1 0.1 0.0
-$EndNodes
-$Elements
-2
-1 2 2 1 1 1 2 3
-2 2 2 2 2 2 4 3
-$EndElements
-"""
-    path.write_text(content)
+    import gmsh
+
+    gmsh.initialize()
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.model.add("smoke_sphere")
+
+        # Sphere via OpenCascade primitive then surface extraction
+        # (we only need a closed surface mesh for exterior BEM).
+        sphere_vol = gmsh.model.occ.addSphere(0, 0, 0, radius_m)
+        gmsh.model.occ.synchronize()
+
+        # Get the surface(s) of the sphere
+        surfaces = gmsh.model.getBoundary([(3, sphere_vol)], oriented=False)
+        # Split the sphere surface into upper / lower hemispheres by
+        # cutting with a plane at z=0. Simpler approach: tag the whole
+        # surface as one group and use a single-tag source. That's
+        # enough for the smoke test.
+
+        # Remove the volume so we only mesh the surface
+        gmsh.model.occ.remove([(3, sphere_vol)], recursive=False)
+        gmsh.model.occ.synchronize()
+
+        # Assign all surfaces to a single physical group (tag 2 = source)
+        surface_tags = [s[1] for s in surfaces]
+        gmsh.model.addPhysicalGroup(2, surface_tags, tag=2)
+        gmsh.model.setPhysicalName(2, 2, "source")
+
+        # Mesh
+        gmsh.option.setNumber("Mesh.MeshSizeMax", elem_size_m)
+        gmsh.option.setNumber("Mesh.MeshSizeMin", elem_size_m)
+        gmsh.option.setNumber("Mesh.MshFileVersion", 2.2)
+        gmsh.model.mesh.generate(2)
+        gmsh.write(str(path))
+    finally:
+        gmsh.finalize()
 
 
 def main():
     from hornlab_sim.methods import lem_to_bem
 
-    freqs = np.array([200.0, 400.0, 800.0])
-    # Tag 2 ("source") in the tiny mesh -> "throat" aperture
+    freqs = np.array([500.0, 1000.0, 2000.0])
+    # Tag 2 in the smoke mesh -> "throat" aperture
     aperture_tags = {"throat": [2]}
-    # Unit volume velocity at all frequencies (LEM would produce this)
+    # Constant 1e-3 m^3/s volume velocity (LEM would produce frequency-
+    # dependent values in a real workflow)
     lem_velocities = {"throat": np.ones(len(freqs), dtype=np.complex128) * 1e-3}
 
     with tempfile.TemporaryDirectory() as td:
-        mesh_path = Path(td) / "smoke.msh"
-        _write_tiny_msh(mesh_path)
+        mesh_path = Path(td) / "smoke_sphere.msh"
+        print(f"Building closed sphere mesh -> {mesh_path}")
+        _build_sphere_msh(mesh_path, radius_m=0.05, elem_size_m=0.02)
 
-        print(f"Mesh: {mesh_path}")
         print(f"Frequencies: {freqs}")
         print(f"Aperture velocities (m^3/s): {lem_velocities}")
 
