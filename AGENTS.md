@@ -17,7 +17,7 @@ orchestrator. Read this file and pick the right method.
 | Mid-chamber resonance for a midport pocket | LEM Helmholtz | `hornlab_sim.methods.helmholtz` (`bigmeh_mid_chamber_helmholtz_from_params`) |
 | Axial duct impedance with viscothermal losses (segmented horn/duct) | TMM | `hornlab_sim.methods.transfer_matrix` (`duct_input_impedance`, `uniform_tube_matrix`, `make_slot_tmm_load`) |
 | Full 3D directivity from prescribed velocity sources (no LEM) | BEM | `hornlab_solver.solve_frequencies` directly, or `MEH-Lab/tools/bigmeh_parametric/wg_bem.py` for BIGMEH cabinets |
-| Full 3D directivity with realistic LEM-derived source velocities at apertures | LEM→BEM forward coupling | `hornlab_sim.methods.lem_to_bem` for generic/custom meshes; `MEH-Lab/tools/bigmeh_parametric/lem_wg_bem.py` for BIGMEH validation heatmaps |
+| Full 3D directivity with realistic LEM/TMM-derived source velocities at apertures | Source-basis BEM coupling | `hornlab_sim.methods.lem_to_bem` for generic/custom meshes; `MEH-Lab/tools/bigmeh_parametric/source_basis_wg_bem.py` plus `lem_wg_bem.py` for BIGMEH validation heatmaps |
 
 ## Canonical interpretations (load-bearing — do not change without explicit user sign-off)
 
@@ -36,10 +36,11 @@ When using `hornlab_sim.methods.lem_to_bem`:
 5. **Phase reference.** All LEM aperture velocities share an excitation reference (driver terminal voltage). Mesh-side BCs must use the same complex sign convention. The +iωρv convention matches `hornlab-solver` canonical settings.
 
 For BIGMEH/Synergy validation plots, use MEH-Lab's
-`bigmeh_parametric.lem_wg_bem.run()` instead of calling this generic
-solver-level coupling directly. That adapter routes the BEM solve through
-`bigmeh_parametric.wg_bem.run`, which owns the BIGMEH observation frame
-and canonical `results.npz`/heatmap schema.
+`bigmeh_parametric.source_basis_wg_bem.run()` (or the LEM-specific
+`lem_wg_bem.run()` wrapper) instead of calling this generic solver-level
+coupling directly. Those adapters route the BEM solve through
+`bigmeh_parametric.wg_bem.run`, which owns the BIGMEH observation frame,
+basis caching, and canonical `results.npz`/heatmap schema.
 
 ## Solver settings (BEM side, from parent AGENTS.md §1)
 
