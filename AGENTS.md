@@ -40,7 +40,7 @@ When using `hornlab_sim.methods.lem_to_bem`:
 - BM=off everywhere
 - COMPLEX_K formulation; complex_k_shift=0.005 when enclosed
 - LU solver for narrow slots, AUTO otherwise
-- DP0/P1, per-op quadrature 2/4
+- DP0/P1, q=4 regular quadrature
 - +iωρv sign convention
 
 These defaults live in `hornlab_solver.SolveConfig`. Don't override without explicit reason.
