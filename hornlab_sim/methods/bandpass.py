@@ -109,6 +109,11 @@ class Port:
     the physical port length. End corrections are added per physical
     opening via `flanged_inside`/`flanged_outside`.
 
+    Set `radiation_external=False` when a downstream BEM solve radiates the
+    outside aperture. That suppresses the outside end correction and the
+    port radiation resistance so the LEM does not double-count the BEM-side
+    radiation impedance.
+
     `n_parallel` handles split-but-identical ports. The equivalent acoustic
     mass uses the total area, but the end correction is computed from the
     per-port area. This keeps old single-port callers unchanged while
@@ -122,6 +127,7 @@ class Port:
     length: float
     flanged_inside: bool = True
     flanged_outside: bool = True
+    radiation_external: bool = True
     Q_port: float = 50.0
     n_parallel: int = 1
 
@@ -136,9 +142,12 @@ class Port:
 
     @property
     def L_eff(self) -> float:
-        return (self.length
-                + self.end_correction(self.flanged_inside)
-                + self.end_correction(self.flanged_outside))
+        outside_end = (
+            self.end_correction(self.flanged_outside)
+            if self.radiation_external
+            else 0.0
+        )
+        return self.length + self.end_correction(self.flanged_inside) + outside_end
 
     @property
     def Mport(self) -> float:
@@ -150,7 +159,9 @@ class Port:
         # Radiation resistance into half-space (real part of piston Z).
         # End correction supplies the reactive (mass) part — don't double
         # count by adding piston-impedance reactance here.
-        if self.flanged_outside:
+        if not self.radiation_external:
+            R_rad = 0.0
+        elif self.flanged_outside:
             R_rad = RHO * omega ** 2 / (2 * math.pi * C_SOUND)
         else:
             R_rad = RHO * omega ** 2 / (4 * math.pi * C_SOUND)

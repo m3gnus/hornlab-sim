@@ -33,7 +33,7 @@ package limited to reusable physics methods.
 
 When using `hornlab_sim.methods.lem_to_bem`:
 
-1. **Suppress LEM-side radiation end correction at any aperture that BEM is going to radiate.** Pass `include_radiation_end_correction=False` to the LEM call for that aperture. Otherwise the end correction is double-counted (once by LEM, once by BEM-computed radiation impedance) and you get systematic dB errors at the LF/MF crossover.
+1. **Suppress LEM-side radiation loading at any aperture that BEM is going to radiate.** For Helmholtz helpers, pass `end_corr="none"` for that aperture. For bandpass `Port`, pass `radiation_external=False` so both the outside end correction and radiation resistance are suppressed. Otherwise the radiation loading is double-counted (once by LEM, once by BEM-computed radiation impedance) and you get systematic dB errors at the LF/MF crossover.
 2. **Aperture name → list of physical group IDs.** BIGMEH meshes already produce multiple tags per slot (exit + walls). The coupling layer expects `dict[str, list[int]]`, not 1:1.
 3. **Area mismatch is a warning, not an error.** Sum of BEM face areas vs LEM-assumed S can disagree up to ~5% from mesh discretization. Warn, log to result metadata, continue.
 4. **Velocity vs acceleration mode.** Canonical solver default is `velocity_mode=ACCELERATION`. LEM emits volume velocity U. The coupling layer converts U → v_n and lets the solver apply jω. Don't pass acceleration directly.

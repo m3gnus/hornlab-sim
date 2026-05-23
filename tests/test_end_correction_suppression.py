@@ -29,8 +29,10 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
 import pytest
 
+from hornlab_sim.methods.bandpass import Port
 from hornlab_sim.methods.helmholtz import helmholtz, bigmeh_slot_helmholtz
 
 
@@ -167,3 +169,50 @@ def test_bigmeh_slot_helmholtz_slot_pocket_interp_degenerates_with_no_end_corr()
             interpretation="slot_pocket",
             end_corr="none",
         )
+
+
+# ---------------------------------------------------------------------------
+# bandpass.Port: suppress BEM-radiated external aperture loading
+# ---------------------------------------------------------------------------
+
+
+def test_bandpass_port_can_suppress_external_end_correction():
+    """radiation_external=False keeps the chamber-side correction only."""
+    port = Port(
+        area=0.130 * 0.376,
+        length=0.05,
+        flanged_inside=True,
+        flanged_outside=True,
+        radiation_external=False,
+    )
+
+    expected = port.length + port.end_correction(True)
+    assert port.L_eff == pytest.approx(expected)
+
+
+def test_bandpass_port_external_radiation_default_is_unchanged():
+    """Default Port behavior still includes both end corrections."""
+    port = Port(
+        area=0.130 * 0.376,
+        length=0.05,
+        flanged_inside=True,
+        flanged_outside=True,
+    )
+
+    expected = port.length + port.end_correction(True) + port.end_correction(True)
+    assert port.L_eff == pytest.approx(expected)
+
+
+def test_bandpass_port_can_suppress_external_radiation_resistance():
+    """BEM-coupled ports should not add LEM-side radiation resistance."""
+    omega = np.array([2 * math.pi * 200.0])
+    port = Port(
+        area=0.130 * 0.376,
+        length=0.05,
+        flanged_inside=True,
+        flanged_outside=True,
+        radiation_external=False,
+        Q_port=math.inf,
+    )
+
+    assert np.real(port.impedance(omega))[0] == pytest.approx(0.0)

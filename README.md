@@ -24,3 +24,7 @@ pip install -e .[dev]         # + pytest
 
 See `AGENTS.md` for the decision tree: which method to reach for given the
 design question being asked.
+
+For LEM→BEM coupling, suppress LEM-side external radiation loading on any
+BEM-radiated aperture. Use `end_corr="none"` with Helmholtz helpers and
+`Port(..., radiation_external=False)` with bandpass ports.
