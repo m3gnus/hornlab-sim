@@ -4,9 +4,13 @@
 > Sibling rules: [../MEH-Lab/AGENTS.md](../MEH-Lab/AGENTS.md)
 
 This package is the canonical home for lumped (LEM), transfer-matrix (TMM),
-Helmholtz, and LEM↔BEM coupling simulators. There is **no orchestrator
-class**, **no registry**, **no intent table** — you, the agent, are the
-orchestrator. Read this file and pick the right method.
+Helmholtz, and LEM↔BEM coupling simulators. There is **no global project
+orchestrator**, **no project registry**, **no MEH intent table** in this
+package. Read this file and pick the right reusable method.
+
+Project-specific orchestration belongs in the consuming project. For MEH-Lab
+studies, use `MEH-Lab/tools/meh_pipeline/` as the workflow layer and keep this
+package limited to reusable physics methods.
 
 ## Decision tree
 
@@ -63,8 +67,10 @@ These defaults live in `hornlab_solver.SolveConfig`. Don't override without expl
 | BEM mesher | `hornlab-mesher` package |
 | BEM solver | `hornlab-solver` package |
 | BEM canonical caller for BIGMEH | `MEH-Lab/tools/bigmeh_parametric/wg_bem.py` |
+| MEH project orchestration / tool registry | `MEH-Lab/tools/meh_pipeline/` |
 
-If a new BIGMEH-specific calculation needs to be added, it goes in MEH-Lab. If it's general lumped or coupling physics, it goes here.
+If a new MEH project-specific calculation needs to be added, it goes in
+MEH-Lab. If it's general lumped or coupling physics, it goes here.
 
 ## Auto-commit policy
 
