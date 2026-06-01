@@ -22,6 +22,7 @@ package limited to reusable physics methods.
 | Axial duct impedance with viscothermal losses (segmented horn/duct) | TMM | `hornlab_sim.methods.transfer_matrix` (`duct_input_impedance`, `uniform_tube_matrix`, `make_slot_tmm_load`) |
 | Full 3D directivity from prescribed velocity sources (no LEM) | BEM | `hornlab_solver.solve_frequencies` directly, or `MEH-Lab/tools/bigmeh_parametric/wg_bem.py` for BIGMEH cabinets |
 | Full 3D directivity with realistic LEM/TMM-derived source velocities at apertures | Source-basis BEM coupling | `hornlab_sim.methods.lem_to_bem` for generic/custom meshes; `MEH-Lab/tools/bigmeh_parametric/source_basis_wg_bem.py` plus `lem_wg_bem.py` for BIGMEH validation heatmaps |
+| Reduced FEM/BEM-style aperture back-loading | BEM radiation impedance matrix | `hornlab_sim.methods.radiation_impedance` |
 
 ## Canonical interpretations (load-bearing — do not change without explicit user sign-off)
 
@@ -64,6 +65,7 @@ These defaults live in `hornlab_solver.SolveConfig`. Don't override without expl
 | BIGMEH cabinet geometry, params, slot interpretation knobs | `MEH-Lab/tools/bigmeh_parametric/` |
 | BIGMEH → lumped adapter | `MEH-Lab/tools/lumped/from_bigmeh.py` |
 | TMM CLI (BIGMEH-aware) | `MEH-Lab/tools/lumped/tmm_cli.py` |
+| Aperture radiation impedance matrices | `hornlab_sim.methods.radiation_impedance` |
 | BEM mesher | `hornlab-mesher` package |
 | BEM solver | `hornlab-solver` package |
 | BEM canonical caller for BIGMEH | `MEH-Lab/tools/bigmeh_parametric/wg_bem.py` |
