@@ -1,15 +1,16 @@
 # hornlab-sim
 
-Canonical lumped and LEM-BEM coupling simulators for HornLab.
+Reusable lumped, transfer-matrix, Helmholtz, and LEM-BEM coupling
+simulators for acoustic design work.
 
-This package holds the small/fast acoustic models that complement the BEM
-pipeline in `hornlab-mesher` + `hornlab-solver`.
+This package holds small/fast acoustic models that can be used standalone or
+alongside a BEM pipeline such as `hornlab-mesher` + `hornlab-solver`.
 
 ## Modules
 
 - `hornlab_sim.methods.bandpass` — BP4/BP6S lumped enclosure simulation, validated within ~2 dB vs Hornresp
 - `hornlab_sim.methods.transfer_matrix` — segmented TMM with Kirchhoff-Benade viscothermal losses (Beranek & Mellow 2012)
-- `hornlab_sim.methods.helmholtz` — slot-pocket and mid-chamber Helmholtz resonance (BIGMEH canonical interpretation: pocket = cavity, exit = baffled hole, L=0, end correction only)
+- `hornlab_sim.methods.helmholtz` — cavity/aperture Helmholtz resonance helpers with configurable end correction
 - `hornlab_sim.methods.lem_to_bem` — forward LEM → BEM coupling (LEM-computed aperture velocities drive a BEM Neumann boundary condition)
 
 ## Install
