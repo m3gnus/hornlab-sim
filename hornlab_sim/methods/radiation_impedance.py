@@ -6,11 +6,11 @@ aperture volume velocities to average aperture pressures:
 
     p_i(f) = sum_j Z_ij(f) Q_j(f)
 
-The implementation reuses the canonical ``hornlab_bempp_bem`` BEM path by
-running one unit-velocity basis solve per source aperture.  It is not a
-full trace-space FEM-BEM coupling; it is the aperture-basis approximation
-intended for MEH cavities, ports, and throat/mouth interfaces where a small
-number of patch-averaged unknowns is a useful first model.
+The implementation dispatches to the selected canonical BEM backend and runs
+one unit-velocity basis solve per source aperture.  It is not a full
+trace-space FEM-BEM coupling; it is the aperture-basis approximation intended
+for MEH cavities, ports, and throat/mouth interfaces where a small number of
+patch-averaged unknowns is a useful first model.
 """
 
 from __future__ import annotations
@@ -18,11 +18,12 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 import math
 from pathlib import Path
-from typing import TYPE_CHECKING, Mapping, Union
+from typing import TYPE_CHECKING, Any, Mapping, Union
 
 import numpy as np
 from numpy.typing import NDArray
 
+from . import _bem_backend
 from .lem_to_bem import _aperture_face_areas
 
 if TYPE_CHECKING:
@@ -30,7 +31,7 @@ if TYPE_CHECKING:
     from hornlab_bempp_bem.mesh import LoadedMesh
 
 
-MeshLike = Union[str, Path, "LoadedMesh"]
+MeshLike = Union[str, Path, "LoadedMesh", Any]
 RHO_AIR = 1.2041
 C_AIR = 343.0
 
@@ -88,7 +89,7 @@ def solve_aperture_matrix(
     mesh: MeshLike,
     aperture_tags: Mapping[str, list[int]],
     frequencies_hz: NDArray[np.float64],
-    config: "SolveConfig | None" = None,
+    config: Any | None = None,
     *,
     normal_velocity: complex = 1.0 + 0.0j,
 ) -> RadiationImpedanceResult:
@@ -103,8 +104,13 @@ def solve_aperture_matrix(
     frequencies_hz
         Positive frequencies to solve.
     config
-        Optional BEM solve config.  The function overrides
-        ``velocity_mode`` and ``velocity_sources`` for each source basis.
+        Optional BEM solve config from ``hornlab_metal_bem`` or
+        ``hornlab_bempp_bem``. The config type selects the backend. If
+        omitted, ``HORNLAB_SIM_BEM_BACKEND=metal|bempp`` selects a backend;
+        unset or ``auto`` prefers available native Metal and falls back to
+        bempp. The default formulation remains the backend standard
+        formulation. The function overrides ``velocity_mode`` and
+        ``velocity_sources`` for each source basis.
     normal_velocity
         Unit normal velocity imposed on all faces of the active source
         aperture.  Must be nonzero.
@@ -120,16 +126,13 @@ def solve_aperture_matrix(
     if abs(drive_velocity) <= 0.0:
         raise ValueError("normal_velocity must be nonzero")
 
-    from hornlab_bempp_bem import SolveConfig as _SC
-    from hornlab_bempp_bem import solve_frequencies
-    from hornlab_bempp_bem.config import VelocityMode
-    from hornlab_bempp_bem.mesh import load_mesh
-
+    backend = _bem_backend.resolve_backend(config)
+    api = _bem_backend.backend_api(backend)
     if config is None:
-        config = _SC()
+        config = api.default_config(None)
 
     if isinstance(mesh, (str, Path)):
-        loaded = load_mesh(mesh, scale=config.mesh_scale)
+        loaded = api.load_mesh(mesh, scale=config.mesh_scale)
     else:
         loaded = mesh
 
@@ -137,7 +140,7 @@ def solve_aperture_matrix(
     unique_tags = sorted({int(tag) for tags in aperture_tags.values() for tag in tags})
     tag_area_m2 = _tag_face_areas(loaded, unique_tags)
 
-    base_config = replace(config, velocity_mode=VelocityMode.VELOCITY)
+    base_config = replace(config, velocity_mode=api.VelocityMode.VELOCITY)
     matrix = np.zeros(
         (freqs.size, len(aperture_names), len(aperture_names)),
         dtype=np.complex128,
@@ -150,10 +153,10 @@ def solve_aperture_matrix(
             sources[int(tag)] = drive_velocity
 
         source_config = replace(base_config, velocity_sources=sources)
-        result = solve_frequencies(loaded, freqs, source_config)
+        result = api.solve_frequencies(loaded, freqs, source_config)
         if result.surface_pressure_avg is None:
             raise RuntimeError(
-                "hornlab_bempp_bem result did not include surface_pressure_avg; "
+                f"{api.name} result did not include surface_pressure_avg; "
                 "cannot assemble aperture radiation matrix"
             )
 

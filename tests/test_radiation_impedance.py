@@ -1,17 +1,38 @@
 from __future__ import annotations
 
-import sys
-from pathlib import Path
+from dataclasses import dataclass, field
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
-HORNLAB_SOLVER = Path(__file__).resolve().parents[3] / "hornlab-bempp-bem"
-if str(HORNLAB_SOLVER) not in sys.path:
-    sys.path.insert(0, str(HORNLAB_SOLVER))
-
+from hornlab_sim.methods import _bem_backend
 from hornlab_sim.methods import radiation_impedance
+
+
+class _FakeVelocityMode:
+    VELOCITY = "velocity"
+    ACCELERATION = "acceleration"
+
+
+@dataclass
+class _FakeConfig:
+    mesh_scale: float = 1.0
+    velocity_mode: str = _FakeVelocityMode.ACCELERATION
+    velocity_sources: dict[int, complex] = field(default_factory=dict)
+
+
+def _patch_bem_backend(monkeypatch, solve_frequencies):
+    api = SimpleNamespace(
+        name="bempp",
+        load_mesh=lambda path, scale=1.0: path,
+        solve_frequencies=solve_frequencies,
+        VelocityMode=_FakeVelocityMode,
+        default_config=lambda formulation: _FakeConfig(),
+    )
+    monkeypatch.setattr(_bem_backend, "resolve_backend", lambda config=None: "bempp")
+    monkeypatch.setattr(_bem_backend, "backend_api", lambda backend: api)
+    return api
 
 
 def _fake_three_tag_mesh():
@@ -60,10 +81,7 @@ def test_aperture_matrix_uses_one_basis_per_source(monkeypatch):
             },
         )
 
-    monkeypatch.setattr(
-        "hornlab_bempp_bem.solve_frequencies",
-        fake_solve_frequencies,
-    )
+    _patch_bem_backend(monkeypatch, fake_solve_frequencies)
 
     result = radiation_impedance.solve_aperture_matrix(
         mesh,
@@ -96,10 +114,7 @@ def test_velocity_mode_matrix_normalizes_by_volume_velocity_v_times_area(monkeyp
             },
         )
 
-    monkeypatch.setattr(
-        "hornlab_bempp_bem.solve_frequencies",
-        fake_solve_frequencies,
-    )
+    _patch_bem_backend(monkeypatch, fake_solve_frequencies)
 
     result = radiation_impedance.solve_aperture_matrix(
         mesh,
@@ -125,10 +140,7 @@ def test_multi_tag_receiver_pressure_is_area_weighted(monkeypatch):
             },
         )
 
-    monkeypatch.setattr(
-        "hornlab_bempp_bem.solve_frequencies",
-        fake_solve_frequencies,
-    )
+    _patch_bem_backend(monkeypatch, fake_solve_frequencies)
 
     result = radiation_impedance.solve_aperture_matrix(
         mesh,

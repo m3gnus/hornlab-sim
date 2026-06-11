@@ -8,13 +8,13 @@ runs an actual BEM solve end-to-end.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
 
+from hornlab_sim.methods import _bem_backend
 from hornlab_sim.methods import lem_to_bem
 from hornlab_sim.methods.lem_to_bem import _aperture_face_areas, _concat_results
 
@@ -22,6 +22,46 @@ from hornlab_sim.methods.lem_to_bem import _aperture_face_areas, _concat_results
 # ---------------------------------------------------------------------------
 # Test fixtures: a fake mesh and a fake SolveResult so we can avoid bempp.
 # ---------------------------------------------------------------------------
+
+
+class _FakeVelocityMode:
+    VELOCITY = "velocity"
+    ACCELERATION = "acceleration"
+
+
+@dataclass
+class _FakeConfig:
+    mesh_scale: float = 1.0
+    velocity_mode: str = _FakeVelocityMode.ACCELERATION
+    velocity_sources: dict[int, complex] = field(default_factory=dict)
+
+
+@dataclass
+class _FakeSolveResult:
+    frequencies_hz: np.ndarray
+    pressure_complex: np.ndarray
+    spl_db: np.ndarray
+    impedance: np.ndarray
+    timings: dict[str, float] = field(default_factory=dict)
+    solver_log: list[dict] = field(default_factory=list)
+    surface_pressure_avg: dict[int, np.ndarray] | None = None
+
+    @property
+    def directivity_db(self):
+        return self.spl_db
+
+
+def _patch_bem_backend(monkeypatch, solve_frequencies):
+    api = SimpleNamespace(
+        name="bempp",
+        load_mesh=lambda path, scale=1.0: path,
+        solve_frequencies=solve_frequencies,
+        VelocityMode=_FakeVelocityMode,
+        default_config=lambda formulation: _FakeConfig(),
+    )
+    monkeypatch.setattr(_bem_backend, "resolve_backend", lambda config=None: "bempp")
+    monkeypatch.setattr(_bem_backend, "backend_api", lambda backend: api)
+    return api
 
 
 def _fake_unit_square_mesh(extra_tags: dict[int, list[tuple[float, float, float]]] | None = None):
@@ -159,9 +199,7 @@ def test_area_mismatch_warns_but_does_not_throw(monkeypatch):
     def fake_solve_frequencies(loaded, freqs_list, cfg):
         return fake_result
 
-    monkeypatch.setattr(
-        "hornlab_bempp_bem.solve_frequencies", fake_solve_frequencies
-    )
+    _patch_bem_backend(monkeypatch, fake_solve_frequencies)
 
     freqs = np.array([100.0])
     U = {
@@ -194,9 +232,7 @@ def test_velocity_sources_dict_captures_complex_u_over_area(monkeypatch):
         captured.append({"freqs": list(freqs), "sources": dict(cfg.velocity_sources)})
         return _fake_solve_result(freqs=freqs)
 
-    monkeypatch.setattr(
-        "hornlab_bempp_bem.solve_frequencies", fake_solve_frequencies
-    )
+    _patch_bem_backend(monkeypatch, fake_solve_frequencies)
 
     freqs = np.array([200.0, 500.0])
     U = np.array([3.0 + 4.0j, 1.0 - 1.0j])  # m^3/s
@@ -224,9 +260,7 @@ def test_multi_tag_aperture_applies_same_vn_to_each_tag(monkeypatch):
         captured.append(dict(cfg.velocity_sources))
         return _fake_solve_result(freqs=freqs)
 
-    monkeypatch.setattr(
-        "hornlab_bempp_bem.solve_frequencies", fake_solve_frequencies
-    )
+    _patch_bem_backend(monkeypatch, fake_solve_frequencies)
 
     freqs = np.array([100.0])
     U = np.array([2.0 + 0.0j])
@@ -269,25 +303,11 @@ def _fake_solve_result(freqs):
     n_planes = 2
     n_angles = 5
 
-    # Try to import the real SolveResult to keep dataclass equality
-    from hornlab_bempp_bem.result import MeshInfo, SolveResult
-    from hornlab_bempp_bem import SolveConfig
-
-    return SolveResult(
+    return _FakeSolveResult(
         frequencies_hz=np.asarray(freqs, dtype=np.float64),
         pressure_complex=np.zeros((n_freq, n_planes, n_angles), dtype=np.complex128),
         spl_db=np.zeros((n_freq, n_planes, n_angles), dtype=np.float64),
         impedance=np.zeros(n_freq, dtype=np.complex128),
-        observation_angles_deg=np.linspace(0, 180, n_angles),
-        observation_points=np.zeros((n_planes, n_angles, 3)),
-        observation_planes=["horizontal", "vertical"],
-        config=SolveConfig(),
-        mesh_info=MeshInfo(
-            n_vertices=4,
-            n_triangles=2,
-            physical_groups={2: "throat", 3: "wall"},
-            bounding_box_m=(np.zeros(3), np.ones(3)),
-        ),
         timings={},
         solver_log=[],
         surface_pressure_avg=None,

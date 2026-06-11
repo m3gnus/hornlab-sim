@@ -50,17 +50,19 @@ from __future__ import annotations
 import warnings
 from dataclasses import replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Mapping, Union
+from typing import TYPE_CHECKING, Any, Mapping, Union
 
 import numpy as np
 from numpy.typing import NDArray
+
+from . import _bem_backend
 
 if TYPE_CHECKING:
     from hornlab_bempp_bem import SolveConfig, SolveResult
     from hornlab_bempp_bem.mesh import LoadedMesh
 
 
-MeshLike = Union[str, Path, "LoadedMesh"]
+MeshLike = Union[str, Path, "LoadedMesh", Any]
 
 
 def solve(
@@ -68,10 +70,10 @@ def solve(
     lem_velocities: Mapping[str, NDArray[np.complex128]],
     aperture_tags: Mapping[str, list[int]],
     frequencies_hz: NDArray[np.float64],
-    config: "SolveConfig | None" = None,
+    config: Any | None = None,
     *,
     area_tolerance: float = 0.05,
-) -> "SolveResult":
+) -> Any:
     """Solve BEM with LEM-derived complex velocity sources per aperture.
 
     Parameters
@@ -88,10 +90,13 @@ def solve(
     frequencies_hz : array of float
         Frequencies to solve at, in Hz.
     config : SolveConfig, optional
-        Solver configuration. Defaults to canonical settings
-        (``BIEFormulation.COMPLEX_K``, BM=off, AUTO solver). The
-        coupling layer always overrides ``velocity_mode`` and
-        ``velocity_sources`` per frequency.
+        Solver configuration from ``hornlab_metal_bem`` or
+        ``hornlab_bempp_bem``. The config type selects the backend. If
+        omitted, ``HORNLAB_SIM_BEM_BACKEND=metal|bempp`` selects a backend;
+        unset or ``auto`` prefers available native Metal and falls back to
+        bempp. The default formulation remains ``COMPLEX_K``. The coupling
+        layer always overrides ``velocity_mode`` and ``velocity_sources``
+        per frequency.
     area_tolerance : float, default 0.05
         Per-aperture area-spread threshold for the diagnostic warning. The
         spread is measured between apertures; useful for catching a
@@ -101,9 +106,9 @@ def solve(
     Returns
     -------
     SolveResult
-        Standard ``hornlab_bempp_bem.SolveResult`` with complex pressure of
-        shape ``(n_freq, n_planes, n_angles)``. The per-aperture v_n applied
-        at each frequency is recorded in ``result.solver_log``.
+        Selected backend's SolveResult with complex pressure of shape
+        ``(n_freq, n_planes, n_angles)``. The per-aperture v_n applied at
+        each frequency is recorded in ``result.solver_log``.
 
     Raises
     ------
@@ -121,12 +126,6 @@ def solve(
     across multiple right-hand sides (the ABEC superposition trick); for
     now the layer is correct but not asymptotically optimal.
     """
-    # Lazy import to keep core hornlab_sim install lightweight
-    from hornlab_bempp_bem import SolveConfig as _SC
-    from hornlab_bempp_bem import solve_frequencies
-    from hornlab_bempp_bem.config import BIEFormulation, VelocityMode
-    from hornlab_bempp_bem.mesh import load_mesh
-
     # ----- Validate input shapes / names ----------------------------------
 
     freqs = np.asarray(frequencies_hz, dtype=np.float64)
@@ -155,13 +154,15 @@ def solve(
 
     # ----- Resolve config -------------------------------------------------
 
+    backend = _bem_backend.resolve_backend(config)
+    api = _bem_backend.backend_api(backend)
     if config is None:
-        config = _SC(formulation=BIEFormulation.COMPLEX_K)
+        config = api.default_config("complex_k")
 
     # ----- Load mesh once -------------------------------------------------
 
     if isinstance(mesh, (str, Path)):
-        loaded = load_mesh(mesh, scale=config.mesh_scale)
+        loaded = api.load_mesh(mesh, scale=config.mesh_scale)
     else:
         loaded = mesh
 
@@ -190,7 +191,7 @@ def solve(
 
     # The coupling layer always uses VELOCITY mode regardless of caller's
     # config, because LEM emits volume velocity directly.
-    base_config = replace(config, velocity_mode=VelocityMode.VELOCITY)
+    base_config = replace(config, velocity_mode=api.VelocityMode.VELOCITY)
 
     per_freq_results = []
     per_freq_log = []
@@ -209,7 +210,7 @@ def solve(
                 sources[int(tag)] = v_n
 
         freq_config = replace(base_config, velocity_sources=sources)
-        single = solve_frequencies(loaded, [float(f)], freq_config)
+        single = api.solve_frequencies(loaded, [float(f)], freq_config)
         per_freq_results.append(single)
         per_freq_log.append({"frequency_hz": float(f), "v_n_per_aperture": log_entry})
 
@@ -277,8 +278,11 @@ def _concat_results(per_freq_results, frequencies_hz):
     pressure_complex = np.concatenate(
         [r.pressure_complex for r in per_freq_results], axis=0
     )
-    spl_db = np.concatenate([r.spl_db for r in per_freq_results], axis=0)
+    directivity_db = np.concatenate(
+        [r.directivity_db for r in per_freq_results], axis=0
+    )
     impedance = np.concatenate([r.impedance for r in per_freq_results], axis=0)
+    spl_field = _bem_backend.normalized_spl_field_name(first)
 
     # Per-tag surface pressure (if populated)
     surface_pressure_avg = None
@@ -293,7 +297,7 @@ def _concat_results(per_freq_results, frequencies_hz):
         first,
         frequencies_hz=np.asarray(frequencies_hz, dtype=np.float64),
         pressure_complex=pressure_complex,
-        spl_db=spl_db,
+        **{spl_field: directivity_db},
         impedance=impedance,
         surface_pressure_avg=surface_pressure_avg,
         solver_log=[entry for r in per_freq_results for entry in r.solver_log],
