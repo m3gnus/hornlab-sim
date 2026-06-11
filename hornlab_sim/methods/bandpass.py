@@ -31,7 +31,13 @@ from typing import Optional
 
 import numpy as np
 
-from .port_acoustics import end_correction as _pa_end_correction
+from .port_acoustics import (
+    GAMMA_AIR,
+    MU_AIR,
+    PRANDTL_AIR,
+    end_correction as _pa_end_correction,
+    viscothermal_port_q,
+)
 
 RHO = 1.21          # air density (kg/m^3) at ~20 C
 C_SOUND = 343.0     # speed of sound (m/s)
@@ -63,6 +69,8 @@ class Driver:
     Bl: float
     Re: float
     Le: float = 0.0
+    le2_h: Optional[float] = None
+    re2_ohm: Optional[float] = None
     Mms: Optional[float] = None
     Mmd: Optional[float] = None
     Cms: Optional[float] = None
@@ -72,10 +80,16 @@ class Driver:
     Qms: Optional[float] = None
     n_drivers: int = 1
 
-    def derive(self) -> "Driver":
+    def derive(self, *, rho: float = RHO, c: float = C_SOUND) -> "Driver":
         d = Driver(**self.__dict__)
         if d.Mms is None and d.Mmd is None:
             raise ValueError("Driver needs Mms or Mmd")
+        if (d.le2_h is None) != (d.re2_ohm is None):
+            raise ValueError("LR-2 model requires both le2_h and re2_ohm")
+        if d.le2_h is not None and d.le2_h <= 0:
+            raise ValueError("le2_h must be positive when set")
+        if d.re2_ohm is not None and d.re2_ohm <= 0:
+            raise ValueError("re2_ohm must be positive when set")
         if d.Mms is None:
             # In a bandpass enclosure both cone faces load against chamber
             # compliance, not free-air radiation mass. Treat Mms ≈ Mmd —
@@ -83,7 +97,7 @@ class Driver:
             # open-baffle / unchambered cones, add 2·(8/3)·ρ·a³ manually.
             d.Mms = d.Mmd
         if d.Cms is None and d.Vas is not None:
-            d.Cms = d.Vas / (RHO * C_SOUND ** 2 * d.Sd ** 2)
+            d.Cms = d.Vas / (rho * c ** 2 * d.Sd ** 2)
         if d.Cms is None and d.Fs is not None:
             d.Cms = 1.0 / ((2 * math.pi * d.Fs) ** 2 * d.Mms)
         if d.Cms is None:
@@ -95,6 +109,28 @@ class Driver:
         if d.Rms is None:
             d.Rms = (2 * math.pi * d.Fs * d.Mms) / 5.0
         return d
+
+    def blocked_electrical_impedance(
+        self,
+        omega: np.ndarray,
+        *,
+        Rg: float = 0.0,
+    ) -> np.ndarray:
+        """Blocked voice-coil impedance including optional LR-2 branch.
+
+        When ``le2_h`` and ``re2_ohm`` are set, the semi-inductance branch is
+        ``(jw*Le2 * R2) / (jw*Le2 + R2)`` in series with the plain Re+Le
+        branch. With unset LR-2 params this is exactly the legacy Re+jwLe
+        model.
+        """
+        s = 1j * omega
+        z = self.Re + s * self.Le
+        if self.le2_h is not None and self.re2_ohm is not None:
+            z_lr2 = (s * self.le2_h * self.re2_ohm) / (
+                s * self.le2_h + self.re2_ohm
+            )
+            z = z + z_lr2
+        return z + Rg
 
 
 # ---------------------------------------------------------------------------
@@ -114,6 +150,12 @@ class Port:
     port radiation resistance so the LEM does not double-count the BEM-side
     radiation impedance.
 
+    ``Q_port`` controls the series viscous loss. Pass a number for the legacy
+    fixed-Q behavior. The default ``None`` derives Q from the port hydraulic
+    radius using the same Kirchhoff-Benade boundary-layer scaling as
+    ``transfer_matrix.py``; set ``Q_port_eval_hz`` to freeze the derived Q at
+    a specific frequency.
+
     `n_parallel` handles split-but-identical ports. The equivalent acoustic
     mass uses the total area, but the end correction is computed from the
     per-port area. This keeps old single-port callers unchanged while
@@ -128,7 +170,10 @@ class Port:
     flanged_inside: bool = True
     flanged_outside: bool = True
     radiation_external: bool = True
-    Q_port: float = 50.0
+    Q_port: Optional[float] = None
+    Q_port_eval_hz: Optional[float] = None
+    perimeter: Optional[float] = None
+    hydraulic_radius: Optional[float] = None
     n_parallel: int = 1
 
     def end_correction(self, flanged: bool) -> float:
@@ -151,20 +196,64 @@ class Port:
 
     @property
     def Mport(self) -> float:
-        return RHO * self.L_eff / self.area
+        return self.Mport_for(RHO)
 
-    def impedance(self, omega: np.ndarray) -> np.ndarray:
-        Z_m = 1j * omega * self.Mport
-        R_visc = omega * self.Mport / self.Q_port
+    def Mport_for(self, rho: float = RHO) -> float:
+        return rho * self.L_eff / self.area
+
+    def derived_Q_port(
+        self,
+        frequency_hz: float | np.ndarray,
+        *,
+        rho: float = RHO,
+    ) -> float | np.ndarray:
+        """Geometry-derived port Q from Kirchhoff-Benade boundary layers."""
+        hydraulic_radius = self.hydraulic_radius
+        if hydraulic_radius is None and self.perimeter is None and self.length > 0:
+            equiv_radius = math.sqrt((self.area / self.n_parallel) / math.pi)
+            # Area-only legacy Port geometry does not distinguish a round tube
+            # from a short MEH wall tap. Bound the loss length scale by the
+            # wall thickness so Q_port=None is conservative for 24-30 mm
+            # BIGMEH-style entry ports; callers with known geometry should
+            # pass perimeter or hydraulic_radius explicitly.
+            hydraulic_radius = min(equiv_radius, self.length / 8.0)
+        return viscothermal_port_q(
+            frequency_hz,
+            self.area,
+            perimeter_m=self.perimeter,
+            hydraulic_radius_m=hydraulic_radius,
+            n_parallel=self.n_parallel,
+            rho=rho,
+        )
+
+    def impedance(
+        self,
+        omega: np.ndarray,
+        *,
+        rho: float = RHO,
+        c: float = C_SOUND,
+    ) -> np.ndarray:
+        Mport = self.Mport_for(rho)
+        Z_m = 1j * omega * Mport
+        if self.Q_port is None:
+            if self.Q_port_eval_hz is None:
+                q_port = self.derived_Q_port(omega / (2.0 * math.pi), rho=rho)
+            else:
+                q_port = self.derived_Q_port(self.Q_port_eval_hz, rho=rho)
+            R_visc = omega * Mport / q_port
+        elif math.isinf(self.Q_port):
+            R_visc = 0.0
+        else:
+            R_visc = omega * Mport / self.Q_port
         # Radiation resistance into half-space (real part of piston Z).
         # End correction supplies the reactive (mass) part — don't double
         # count by adding piston-impedance reactance here.
         if not self.radiation_external:
             R_rad = 0.0
         elif self.flanged_outside:
-            R_rad = RHO * omega ** 2 / (2 * math.pi * C_SOUND)
+            R_rad = rho * omega ** 2 / (2 * math.pi * c)
         else:
-            R_rad = RHO * omega ** 2 / (4 * math.pi * C_SOUND)
+            R_rad = rho * omega ** 2 / (4 * math.pi * c)
         R_rad = R_rad / self.n_parallel
         return Z_m + R_visc + R_rad
 
@@ -175,18 +264,62 @@ class Chamber:
     volume: float
     fill_loss: float = 0.0   # extra acoustic resistance Pa·s/m^3 (stuffing)
     port: Optional[Port] = None
+    thermal_surface_area_m2: Optional[float] = None
 
     @property
     def Cab(self) -> float:
         return self.volume / (RHO * C_SOUND ** 2)
 
-    def load_impedance(self, omega: np.ndarray) -> np.ndarray:
+    def Cab_for(
+        self,
+        omega: np.ndarray | None = None,
+        *,
+        rho: float = RHO,
+        c: float = C_SOUND,
+        gamma: float = GAMMA_AIR,
+        mu: float = MU_AIR,
+        prandtl: float = PRANDTL_AIR,
+    ) -> float | np.ndarray:
+        """Air compliance, optionally with small-cavity thermal correction.
+
+        With ``thermal_surface_area_m2`` set, a low-frequency isothermal
+        boundary-layer correction is applied:
+
+            C_eff = C_ad * (1 + (gamma - 1) * S*delta_t/(2V))
+
+        clamped to the isothermal limit ``gamma*C_ad``. This is the standard
+        Daniels/small-cavity result for heat conduction at rigid walls.
+        """
+        C_ad = self.volume / (rho * c ** 2)
+        if self.thermal_surface_area_m2 is None:
+            return C_ad
+        if self.thermal_surface_area_m2 <= 0:
+            raise ValueError("thermal_surface_area_m2 must be positive when set")
+        if omega is None:
+            return C_ad
+        omega_safe = np.asarray(omega, dtype=float)
+        if np.any(omega_safe <= 0) or np.any(~np.isfinite(omega_safe)):
+            raise ValueError("omega must contain positive finite values")
+        delta_v = np.sqrt(2.0 * mu / (rho * omega_safe))
+        delta_t = delta_v / math.sqrt(prandtl)
+        factor = 1.0 + (gamma - 1.0) * self.thermal_surface_area_m2 * delta_t / (
+            2.0 * self.volume
+        )
+        return C_ad * np.minimum(factor, gamma)
+
+    def load_impedance(
+        self,
+        omega: np.ndarray,
+        *,
+        rho: float = RHO,
+        c: float = C_SOUND,
+    ) -> np.ndarray:
         s = 1j * omega
-        Y = s * self.Cab
+        Y = s * self.Cab_for(omega, rho=rho, c=c)
         if self.fill_loss > 0:
             Y = Y + 1.0 / self.fill_loss
         if self.port is not None:
-            Y = Y + 1.0 / self.port.impedance(omega)
+            Y = Y + 1.0 / self.port.impedance(omega, rho=rho, c=c)
         return 1.0 / Y
 
 
@@ -221,6 +354,8 @@ def simulate(
     distance_m: float = 1.0,
     sum_ports_coherently: bool = True,
     driver_radiates_directly: bool = False,
+    rho: float = RHO,
+    c: float = C_SOUND,
 ) -> Sim:
     """Solve the lumped network and return on-axis pressure response.
 
@@ -241,7 +376,7 @@ def simulate(
         U_pf = p_f / Z_port_f
         U_pr = p_r / Z_port_r
     """
-    driver = driver.derive()
+    driver = driver.derive(rho=rho, c=c)
     n = driver.n_drivers
     omega = 2 * math.pi * freq
     s = 1j * omega
@@ -267,28 +402,37 @@ def simulate(
     Mas_eff = driver.Mms / (n * driver.Sd ** 2)
     Cas_eff = n * driver.Cms * driver.Sd ** 2
     Ras_eff = driver.Rms / (n * driver.Sd ** 2)
-    Re_eff = driver.Re / n
-    Le_eff = driver.Le / n
     Bl = driver.Bl
 
-    Z_e = Re_eff + s * Le_eff + Rg
+    d_eff = Driver(
+        Sd=driver.Sd,
+        Bl=driver.Bl,
+        Re=driver.Re / n,
+        Le=driver.Le / n,
+        le2_h=(None if driver.le2_h is None else driver.le2_h / n),
+        re2_ohm=(None if driver.re2_ohm is None else driver.re2_ohm / n),
+        Mms=driver.Mms,
+        Cms=driver.Cms,
+        Rms=driver.Rms,
+    )
+    Z_e = d_eff.blocked_electrical_impedance(omega, Rg=Rg)
     Z_em = (Bl ** 2) / (Sd_eff ** 2 * Z_e)
     Z_drv = Ras_eff + s * Mas_eff + 1.0 / (s * Cas_eff) + Z_em
     p_g = (Bl * v_g) / (Sd_eff * Z_e)
 
-    Z_load_f = front_chamber.load_impedance(omega)
-    Z_load_r = rear_chamber.load_impedance(omega)
+    Z_load_f = front_chamber.load_impedance(omega, rho=rho, c=c)
+    Z_load_r = rear_chamber.load_impedance(omega, rho=rho, c=c)
 
     Ud = p_g / (Z_drv + Z_load_f + Z_load_r)
     p_f = Z_load_f * Ud
     p_r = -Z_load_r * Ud
 
     if front_chamber.port is not None:
-        U_pf = p_f / front_chamber.port.impedance(omega)
+        U_pf = p_f / front_chamber.port.impedance(omega, rho=rho, c=c)
     else:
         U_pf = np.zeros_like(omega, dtype=complex)
     if rear_chamber.port is not None:
-        U_pr = p_r / rear_chamber.port.impedance(omega)
+        U_pr = p_r / rear_chamber.port.impedance(omega, rho=rho, c=c)
     else:
         U_pr = None
 
@@ -296,7 +440,7 @@ def simulate(
 
     def _spl_complex(U: np.ndarray) -> np.ndarray:
         # |p| = ω·ρ·|U| / (Ω·r) for a small monopole at distance r.
-        return omega * RHO * U / (omega_rad * distance_m) * 1j
+        return omega * rho * U / (omega_rad * distance_m) * 1j
 
     p_pf = _spl_complex(U_pf)
     p_pr = _spl_complex(U_pr) if U_pr is not None else None
@@ -330,7 +474,7 @@ def simulate(
 
     # Electrical impedance: V/I including back-EMF.
     v_cone = Ud / Sd_eff
-    I = (v_g - Bl * v_cone) / (Re_eff + s * Le_eff + Rg)
+    I = (v_g - Bl * v_cone) / Z_e
     Z_elec = v_g / I
 
     # Cone excursion at v_g drive: |x| = |U_d| / (Sd_eff · ω)

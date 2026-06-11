@@ -28,6 +28,7 @@ package limited to reusable physics methods.
 
 - **Slot pocket = front cavity. Slot exit = baffled hole, L=0, end correction only.** This is the BIGMEH-canonical interpretation. Helmholtz code in this package implements it by default. Memory: `feedback_helmholtz_slot_pocket.md`.
 - **Kirchhoff-Benade viscothermal losses** are built into `transfer_matrix.py`. Beranek & Mellow 2012 formulation. Don't replace with a different loss model without rerunning the Hornresp parity tests.
+- **Bandpass `Port(Q_port=None)` derives viscothermal Q from geometry** using the same Kirchhoff-Benade boundary-layer scaling. Pass an explicit numeric `Q_port` for fixed-Q legacy behavior.
 - **BP4/BP6S** are validated within ~2 dB vs Hornresp across the LF passband.
 
 ## LEM↔BEM coupling rules

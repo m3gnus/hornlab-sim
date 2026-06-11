@@ -27,13 +27,17 @@ from typing import Optional, Sequence, Union
 import numpy as np
 
 from .bandpass import RHO, C_SOUND, Port
+from .port_acoustics import (
+    CP_AIR,
+    GAMMA_AIR,
+    KAPPA_AIR,
+    MU_AIR,
+    PRANDTL_AIR,
+)
 
 # ── Air thermo-viscous properties (20 °C, 1 atm) ────────────────────────
-MU_AIR = 1.846e-5       # dynamic viscosity (Pa·s)
-KAPPA_AIR = 0.0257       # thermal conductivity (W/(m·K))
-CP_AIR = 1005.0          # specific heat at constant pressure (J/(kg·K))
-GAMMA = 1.4              # ratio of specific heats
-PRANDTL = MU_AIR * CP_AIR / KAPPA_AIR  # ~0.71
+GAMMA = GAMMA_AIR
+PRANDTL = PRANDTL_AIR
 
 
 # ── Low-level matrix builders ────────────────────────────────────────────
