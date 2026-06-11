@@ -85,6 +85,33 @@ def test_aperture_matrix_uses_one_basis_per_source(monkeypatch):
     np.testing.assert_allclose(result.impedance_matrix[:, 1, 1], [23, 24])
 
 
+def test_velocity_mode_matrix_normalizes_by_volume_velocity_v_times_area(monkeypatch):
+    mesh = _fake_three_tag_mesh()
+
+    def fake_solve_frequencies(loaded, frequencies, cfg):
+        return _fake_result(
+            frequencies,
+            {
+                2: np.array([12.0 + 0.0j]),
+            },
+        )
+
+    monkeypatch.setattr(
+        "hornlab_bempp_bem.solve_frequencies",
+        fake_solve_frequencies,
+    )
+
+    result = radiation_impedance.solve_aperture_matrix(
+        mesh,
+        {"driver": [2]},
+        np.array([100.0]),
+        normal_velocity=3.0,
+    )
+
+    # Tag 2 area is 0.5 m^2, so U = v*A = 1.5 m^3/s.
+    assert result.impedance_matrix[0, 0, 0] == pytest.approx(8.0 + 0.0j)
+
+
 def test_multi_tag_receiver_pressure_is_area_weighted(monkeypatch):
     mesh = _fake_three_tag_mesh()
 
@@ -113,6 +140,67 @@ def test_multi_tag_receiver_pressure_is_area_weighted(monkeypatch):
     # combined receiver average is (10*0.5 + 20*0.5) / 1.0 = 15 Pa.
     # combined source Q is 1.0 m^3/s, so Z=15.
     assert result.impedance_matrix[0, 0, 0] == pytest.approx(15.0)
+
+
+def test_termination_load_conjugates_solver_matrix():
+    solver_matrix = np.array(
+        [[[100.0 - 25.0j]]],
+        dtype=np.complex128,
+    )
+
+    load = radiation_impedance.termination_load_from_solver_matrix(
+        solver_matrix,
+        receiver_index=0,
+    )
+
+    np.testing.assert_allclose(load, [100.0 + 25.0j])
+
+
+def test_termination_load_reduces_in_phase_lr_pair():
+    solver_matrix = np.array(
+        [
+            [
+                [10.0 - 2.0j, 3.0 - 5.0j],
+                [3.0 - 5.0j, 10.0 - 2.0j],
+            ]
+        ],
+        dtype=np.complex128,
+    )
+
+    left_load = radiation_impedance.termination_load_from_solver_matrix(
+        solver_matrix,
+        receiver_index=0,
+        source_indices=[0, 1],
+    )
+
+    np.testing.assert_allclose(left_load, [13.0 + 7.0j])
+
+
+def test_terminated_chamber_port_branch_matches_lumped_network():
+    freqs = np.array([100.0, 200.0])
+    load = np.array([20.0 + 3.0j, 30.0 + 4.0j])
+
+    result = radiation_impedance.terminated_chamber_port_branch(
+        freqs,
+        load,
+        chamber_volume_m3=2.0e-5,
+        port_area_m2=5.0e-4,
+        port_length_m=0.02,
+        interior_end_correction_length_m=0.001,
+        rho=1.2,
+        c=340.0,
+    )
+
+    omega = 2.0 * np.pi * freqs
+    y_chamber = 1j * omega * (2.0e-5 / (1.2 * 340.0 * 340.0))
+    z_port = 1j * omega * 1.2 * 0.021 / 5.0e-4
+    y_series = 1.0 / (z_port + load)
+    total_y = y_chamber + y_series
+    np.testing.assert_allclose(result.input_impedance, 1.0 / total_y)
+    np.testing.assert_allclose(
+        result.exit_to_input_volume_velocity_ratio,
+        y_series / total_y,
+    )
 
 
 def test_collapse_aperture_matrix_area_weights_subtags():

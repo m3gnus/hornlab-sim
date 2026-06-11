@@ -74,6 +74,16 @@ class RadiationMatrixDiagnostics:
     low_ka_self_impedance_rel_error: dict[str, NDArray[np.float64]]
 
 
+@dataclass(frozen=True)
+class TerminatedBranchResult:
+    """Chamber-port branch response with an external BEM termination load."""
+
+    frequencies_hz: NDArray[np.float64]
+    termination_load: NDArray[np.complex128]
+    input_impedance: NDArray[np.complex128]
+    exit_to_input_volume_velocity_ratio: NDArray[np.complex128]
+
+
 def solve_aperture_matrix(
     mesh: MeshLike,
     aperture_tags: Mapping[str, list[int]],
@@ -171,6 +181,134 @@ def solve_aperture_matrix(
         aperture_area_m2=aperture_area_m2,
         impedance_matrix=matrix,
         solver_logs=solver_logs,
+    )
+
+
+def termination_load_from_solver_matrix(
+    solver_matrix: NDArray[np.complex128],
+    *,
+    receiver_index: int | None = None,
+    source_indices: list[int] | tuple[int, ...] | NDArray[np.int_] | None = None,
+    source_weights: NDArray[np.complex128] | list[complex] | tuple[complex, ...] | None = None,
+) -> NDArray[np.complex128]:
+    """Convert solver-convention aperture impedance into an engineering load.
+
+    ``hornlab_sim.methods.radiation_impedance`` returns the complex conjugate
+    of the e^{+jwt} engineering-convention impedance. The 260611 BIGMEH
+    termination-attribution validation locked this against the exact
+    pulsating-sphere solution, so the LEM/TMM insertion convention is encoded
+    here once as ``conj(Z_solver)``.
+
+    If ``receiver_index`` is omitted, the full matrix is conjugated. If it is
+    provided, the helper returns the reduced load seen by that receiver:
+
+    ``Z_load_i = sum_j conj(Z_solver[i, j]) * (Q_j / Q_i)``.
+
+    The in-phase L/R port reduction is therefore ``source_indices=[left,
+    right]`` with the default unit ``source_weights``.
+    """
+    matrix = np.asarray(solver_matrix, dtype=np.complex128)
+    engineering = np.conjugate(matrix)
+    if receiver_index is None:
+        if source_indices is not None or source_weights is not None:
+            raise ValueError(
+                "source_indices/source_weights require receiver_index"
+            )
+        return np.array(engineering, dtype=np.complex128, copy=True)
+
+    if matrix.ndim != 3:
+        raise ValueError(
+            "receiver reduction expects solver_matrix shape (n_freq, n, n), "
+            f"got {matrix.shape}"
+        )
+    n_apertures = matrix.shape[1]
+    if matrix.shape[2] != n_apertures:
+        raise ValueError(
+            "solver_matrix must be square in its last two dimensions, "
+            f"got {matrix.shape}"
+        )
+    receiver = int(receiver_index)
+    if receiver < 0 or receiver >= n_apertures:
+        raise IndexError(
+            f"receiver_index {receiver} out of range for {n_apertures} apertures"
+        )
+
+    if source_indices is None:
+        sources = np.array([receiver], dtype=np.int64)
+    else:
+        sources = np.asarray(source_indices, dtype=np.int64).reshape(-1)
+    if sources.size == 0:
+        raise ValueError("source_indices must not be empty")
+    bad = sources[(sources < 0) | (sources >= n_apertures)]
+    if bad.size:
+        raise IndexError(
+            f"source index {int(bad[0])} out of range for {n_apertures} apertures"
+        )
+
+    if source_weights is None:
+        weights = np.ones(sources.size, dtype=np.complex128)
+    else:
+        weights = np.asarray(source_weights, dtype=np.complex128).reshape(-1)
+        if weights.shape != (sources.size,):
+            raise ValueError(
+                f"source_weights shape {weights.shape}, expected ({sources.size},)"
+            )
+    if not np.all(np.isfinite(weights.real) & np.isfinite(weights.imag)):
+        raise ValueError("source_weights must be finite complex values")
+
+    return np.sum(engineering[:, receiver, sources] * weights[None, :], axis=1)
+
+
+def terminated_chamber_port_branch(
+    frequencies_hz: NDArray[np.float64],
+    termination_load: NDArray[np.complex128],
+    *,
+    chamber_volume_m3: float,
+    port_area_m2: float,
+    port_length_m: float,
+    interior_end_correction_length_m: float = 0.0,
+    rho: float = RHO_AIR,
+    c: float = C_AIR,
+) -> TerminatedBranchResult:
+    """Return input impedance and ``U_exit/U_in`` for a terminated port branch.
+
+    Network topology matches the 260601 d070 port-exit comparison helper:
+    chamber compliance in shunt at the branch input, in parallel with a series
+    path made from port acoustic mass plus the external termination load. The
+    BEM-terminated aperture must not also include LEM-side external radiation
+    loading upstream; use ``end_corr="none"`` or ``radiation_external=False``
+    for that aperture before applying this helper.
+    """
+    freqs = _validate_frequencies(frequencies_hz)
+    load = _validate_load_array(termination_load, freqs)
+    volume = _positive_finite("chamber_volume_m3", chamber_volume_m3)
+    area = _positive_finite("port_area_m2", port_area_m2)
+    length = _nonnegative_finite("port_length_m", port_length_m)
+    interior = _nonnegative_finite(
+        "interior_end_correction_length_m",
+        interior_end_correction_length_m,
+    )
+    rho_f = _positive_finite("rho", rho)
+    c_f = _positive_finite("c", c)
+
+    omega = 2.0 * np.pi * freqs
+    compliance = volume / (rho_f * c_f * c_f)
+    y_chamber = 1j * omega * compliance
+    z_port = 1j * omega * rho_f * (length + interior) / area
+    z_series = z_port + load
+    y_series = 1.0 / z_series
+    total_admittance = y_chamber + y_series
+    zin = 1.0 / total_admittance
+    transfer_ratio = y_series / total_admittance
+
+    return TerminatedBranchResult(
+        frequencies_hz=freqs,
+        termination_load=load,
+        input_impedance=np.asarray(zin, dtype=np.complex128),
+        exit_to_input_volume_velocity_ratio=np.asarray(
+            transfer_ratio,
+            dtype=np.complex128,
+        ),
     )
 
 
@@ -333,6 +471,36 @@ def _validate_frequencies(values: NDArray[np.float64]) -> NDArray[np.float64]:
     if bad.size:
         raise ValueError(f"frequencies_hz must be positive finite values: {bad[:5]}")
     return freqs
+
+
+def _validate_load_array(
+    values: NDArray[np.complex128],
+    freqs: NDArray[np.float64],
+) -> NDArray[np.complex128]:
+    load = np.asarray(values, dtype=np.complex128).reshape(-1)
+    if load.size == 1 and freqs.size != 1:
+        load = np.full(freqs.shape, load[0], dtype=np.complex128)
+    if load.shape != freqs.shape:
+        raise ValueError(
+            f"termination_load shape {load.shape}, expected {freqs.shape}"
+        )
+    if not np.all(np.isfinite(load.real) & np.isfinite(load.imag)):
+        raise ValueError("termination_load must contain finite complex values")
+    return load
+
+
+def _positive_finite(name: str, value: float) -> float:
+    value_f = float(value)
+    if not math.isfinite(value_f) or value_f <= 0.0:
+        raise ValueError(f"{name} must be positive and finite, got {value!r}")
+    return value_f
+
+
+def _nonnegative_finite(name: str, value: float) -> float:
+    value_f = float(value)
+    if not math.isfinite(value_f) or value_f < 0.0:
+        raise ValueError(f"{name} must be non-negative and finite, got {value!r}")
+    return value_f
 
 
 def _validate_matrix_shape(
