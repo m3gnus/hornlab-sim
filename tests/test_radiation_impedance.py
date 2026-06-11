@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
+
+HORNLAB_SOLVER = Path(__file__).resolve().parents[3] / "hornlab-bempp-bem"
+if str(HORNLAB_SOLVER) not in sys.path:
+    sys.path.insert(0, str(HORNLAB_SOLVER))
 
 from hornlab_sim.methods import radiation_impedance
 
@@ -107,6 +113,114 @@ def test_multi_tag_receiver_pressure_is_area_weighted(monkeypatch):
     # combined receiver average is (10*0.5 + 20*0.5) / 1.0 = 15 Pa.
     # combined source Q is 1.0 m^3/s, so Z=15.
     assert result.impedance_matrix[0, 0, 0] == pytest.approx(15.0)
+
+
+def test_collapse_aperture_matrix_area_weights_subtags():
+    freqs = np.array([100.0])
+    matrix = np.zeros((1, 3, 3), dtype=np.complex128)
+    # Names: left_a, left_b, right. Left subtags have 25/75% of the area.
+    matrix[0] = np.array(
+        [
+            [1.0, 2.0, 10.0],
+            [3.0, 4.0, 20.0],
+            [30.0, 40.0, 5.0],
+        ],
+        dtype=np.complex128,
+    )
+    result = radiation_impedance.RadiationImpedanceResult(
+        frequencies_hz=freqs,
+        aperture_names=["left_a", "left_b", "right"],
+        aperture_area_m2={"left_a": 0.25, "left_b": 0.75, "right": 1.0},
+        impedance_matrix=matrix,
+        solver_logs=[],
+    )
+
+    collapsed = radiation_impedance.collapse_aperture_matrix(
+        result,
+        {"left": ["left_a", "left_b"], "right": ["right"]},
+    )
+
+    # Uniform velocity over the left aggregate means source weights are
+    # proportional to subtag area, and the receiver pressure average is also
+    # area-weighted.
+    expected_left_left = (
+        0.25 * 0.25 * 1.0
+        + 0.25 * 0.75 * 2.0
+        + 0.75 * 0.25 * 3.0
+        + 0.75 * 0.75 * 4.0
+    )
+    expected_left_right = 0.25 * 10.0 + 0.75 * 20.0
+    expected_right_left = 0.25 * 30.0 + 0.75 * 40.0
+
+    assert collapsed.aperture_names == ["left", "right"]
+    assert collapsed.aperture_area_m2 == {"left": 1.0, "right": 1.0}
+    assert collapsed.impedance_matrix[0, 0, 0] == pytest.approx(expected_left_left)
+    assert collapsed.impedance_matrix[0, 0, 1] == pytest.approx(expected_left_right)
+    assert collapsed.impedance_matrix[0, 1, 0] == pytest.approx(expected_right_left)
+    assert collapsed.impedance_matrix[0, 1, 1] == pytest.approx(5.0)
+
+
+def test_matrix_diagnostics_reports_reciprocity_and_passivity():
+    result = radiation_impedance.RadiationImpedanceResult(
+        frequencies_hz=np.array([100.0, 200.0]),
+        aperture_names=["a", "b"],
+        aperture_area_m2={"a": 1.0, "b": 1.0},
+        impedance_matrix=np.array(
+            [
+                [[2.0 + 1.0j, 0.5], [0.5, 1.0 + 0.2j]],
+                [[-1.0 + 0.0j, 0.0], [0.25, 1.0 + 0.0j]],
+            ],
+            dtype=np.complex128,
+        ),
+        solver_logs=[],
+    )
+
+    diagnostics = radiation_impedance.matrix_diagnostics(result)
+
+    assert diagnostics.reciprocity_max_abs[0] == pytest.approx(0.0)
+    assert diagnostics.passivity_ok[0]
+    assert diagnostics.reciprocity_max_abs[1] == pytest.approx(0.25)
+    assert diagnostics.passivity_min_eig[1] < 0.0
+    assert not diagnostics.passivity_ok[1]
+
+
+def test_low_ka_baffled_piston_reference_scaling():
+    radius_m = 0.05
+    freqs = np.array([50.0, 100.0])
+
+    z = radiation_impedance.low_ka_baffled_piston_radiation_impedance(
+        radius_m,
+        freqs,
+    )
+
+    assert z[1].real / z[0].real == pytest.approx(4.0)
+    assert z[1].imag / z[0].imag == pytest.approx(2.0)
+
+
+def test_matrix_diagnostics_low_ka_self_impedance_matches_reference():
+    radius_m = 0.04
+    freqs = np.array([80.0, 160.0])
+    expected = radiation_impedance.low_ka_baffled_piston_radiation_impedance(
+        radius_m,
+        freqs,
+    )
+    result = radiation_impedance.RadiationImpedanceResult(
+        frequencies_hz=freqs,
+        aperture_names=["piston"],
+        aperture_area_m2={"piston": np.pi * radius_m * radius_m},
+        impedance_matrix=expected.reshape(2, 1, 1),
+        solver_logs=[],
+    )
+
+    diagnostics = radiation_impedance.matrix_diagnostics(
+        result,
+        piston_radius_m_by_aperture={"piston": radius_m},
+    )
+
+    np.testing.assert_allclose(
+        diagnostics.low_ka_self_impedance_rel_error["piston"],
+        [0.0, 0.0],
+    )
 
 
 def test_empty_frequencies_raise():

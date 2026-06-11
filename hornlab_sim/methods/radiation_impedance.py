@@ -16,6 +16,7 @@ number of patch-averaged unknowns is a useful first model.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import math
 from pathlib import Path
 from typing import TYPE_CHECKING, Mapping, Union
 
@@ -30,6 +31,8 @@ if TYPE_CHECKING:
 
 
 MeshLike = Union[str, Path, "LoadedMesh"]
+RHO_AIR = 1.2041
+C_AIR = 343.0
 
 
 @dataclass(frozen=True)
@@ -57,6 +60,18 @@ class RadiationImpedanceResult:
     aperture_area_m2: dict[str, float]
     impedance_matrix: NDArray[np.complex128]
     solver_logs: list[dict]
+
+
+@dataclass(frozen=True)
+class RadiationMatrixDiagnostics:
+    """Numerical and physical checks for an aperture impedance matrix."""
+
+    reciprocity_max_abs: NDArray[np.float64]
+    reciprocity_max_rel: NDArray[np.float64]
+    passivity_min_eig: NDArray[np.float64]
+    passivity_ok: NDArray[np.bool_]
+    low_ka_self_impedance: dict[str, NDArray[np.complex128]]
+    low_ka_self_impedance_rel_error: dict[str, NDArray[np.float64]]
 
 
 def solve_aperture_matrix(
@@ -89,6 +104,12 @@ def solve_aperture_matrix(
     RadiationImpedanceResult
         Dense aperture matrix ``Z[f, receiver, source]``.
     """
+    freqs = _validate_frequencies(frequencies_hz)
+    aperture_names = _validate_aperture_tags(aperture_tags)
+    drive_velocity = complex(normal_velocity)
+    if abs(drive_velocity) <= 0.0:
+        raise ValueError("normal_velocity must be nonzero")
+
     from hornlab_bempp_bem import SolveConfig as _SC
     from hornlab_bempp_bem import solve_frequencies
     from hornlab_bempp_bem.config import VelocityMode
@@ -96,12 +117,6 @@ def solve_aperture_matrix(
 
     if config is None:
         config = _SC()
-
-    freqs = _validate_frequencies(frequencies_hz)
-    aperture_names = _validate_aperture_tags(aperture_tags)
-    drive_velocity = complex(normal_velocity)
-    if abs(drive_velocity) <= 0.0:
-        raise ValueError("normal_velocity must be nonzero")
 
     if isinstance(mesh, (str, Path)):
         loaded = load_mesh(mesh, scale=config.mesh_scale)
@@ -159,6 +174,157 @@ def solve_aperture_matrix(
     )
 
 
+def collapse_aperture_matrix(
+    result: RadiationImpedanceResult,
+    aperture_groups: Mapping[str, list[str]],
+) -> RadiationImpedanceResult:
+    """Collapse a sub-aperture matrix into aggregate uniformly-driven apertures.
+
+    This is the bookkeeping half of the Phase-1 sub-tag refinement check:
+    solving each sub-tag independently and collapsing the matrix should match
+    a direct one-tag aperture solve when all sub-tags are driven with the same
+    normal velocity.
+    """
+    group_names = list(aperture_groups)
+    if not group_names:
+        raise ValueError("aperture_groups is empty")
+    name_to_index = {name: i for i, name in enumerate(result.aperture_names)}
+    matrix = _validate_matrix_shape(result)
+    collapsed = np.zeros(
+        (result.frequencies_hz.size, len(group_names), len(group_names)),
+        dtype=np.complex128,
+    )
+    collapsed_areas: dict[str, float] = {}
+
+    for group_name, members in aperture_groups.items():
+        if not members:
+            raise ValueError(f"aperture group {group_name!r} is empty")
+        missing = [name for name in members if name not in name_to_index]
+        if missing:
+            raise ValueError(
+                f"aperture group {group_name!r} references unknown aperture(s): "
+                f"{missing}"
+            )
+        area = sum(float(result.aperture_area_m2[name]) for name in members)
+        if area <= 0.0:
+            raise ValueError(f"aperture group {group_name!r} has zero area")
+        collapsed_areas[group_name] = area
+
+    for recv_group_idx, recv_group_name in enumerate(group_names):
+        recv_members = aperture_groups[recv_group_name]
+        recv_area = collapsed_areas[recv_group_name]
+        recv_weights = [
+            float(result.aperture_area_m2[name]) / recv_area
+            for name in recv_members
+        ]
+        recv_indices = [name_to_index[name] for name in recv_members]
+        for source_group_idx, source_group_name in enumerate(group_names):
+            source_members = aperture_groups[source_group_name]
+            source_area = collapsed_areas[source_group_name]
+            source_weights = [
+                float(result.aperture_area_m2[name]) / source_area
+                for name in source_members
+            ]
+            source_indices = [name_to_index[name] for name in source_members]
+            value = np.zeros(result.frequencies_hz.size, dtype=np.complex128)
+            for recv_weight, recv_idx in zip(recv_weights, recv_indices):
+                for source_weight, source_idx in zip(source_weights, source_indices):
+                    value += recv_weight * source_weight * matrix[:, recv_idx, source_idx]
+            collapsed[:, recv_group_idx, source_group_idx] = value
+
+    return RadiationImpedanceResult(
+        frequencies_hz=np.array(result.frequencies_hz, dtype=np.float64, copy=True),
+        aperture_names=group_names,
+        aperture_area_m2=collapsed_areas,
+        impedance_matrix=collapsed,
+        solver_logs=list(result.solver_logs),
+    )
+
+
+def low_ka_baffled_piston_radiation_impedance(
+    radius_m: float,
+    frequencies_hz: NDArray[np.float64],
+    *,
+    rho: float = RHO_AIR,
+    c: float = C_AIR,
+) -> NDArray[np.complex128]:
+    """Low-``ka`` baffled circular-piston reference, in ``p_avg / Q`` units.
+
+    The normalized baffled-piston radiation impedance is approximated as
+    ``R + jX = (ka)^2/2 + j*8*ka/(3*pi)``. This is only intended for the
+    low-frequency attribution gate, where ``ka`` is small enough that the
+    leading terms are the invariant being tested.
+    """
+    radius = float(radius_m)
+    if not math.isfinite(radius) or radius <= 0.0:
+        raise ValueError(f"radius_m must be positive and finite, got {radius_m!r}")
+    freqs = _validate_frequencies(frequencies_hz)
+    area = math.pi * radius * radius
+    ka = (2.0 * math.pi * freqs / float(c)) * radius
+    normalized = 0.5 * ka * ka + 1j * (8.0 / (3.0 * math.pi)) * ka
+    return np.asarray((float(rho) * float(c) / area) * normalized, dtype=np.complex128)
+
+
+def matrix_diagnostics(
+    result: RadiationImpedanceResult,
+    *,
+    piston_radius_m_by_aperture: Mapping[str, float] | None = None,
+    rho: float = RHO_AIR,
+    c: float = C_AIR,
+    low_ka_max: float = 0.35,
+    passivity_tol: float = 1e-9,
+) -> RadiationMatrixDiagnostics:
+    """Return reciprocity, passivity, and optional low-``ka`` diagnostics."""
+    matrix = _validate_matrix_shape(result)
+    transposed = np.swapaxes(matrix, 1, 2)
+    diff = matrix - transposed
+    reciprocity_max_abs = np.max(np.abs(diff), axis=(1, 2))
+    denom = np.maximum(
+        np.max(np.maximum(np.abs(matrix), np.abs(transposed)), axis=(1, 2)),
+        1.0,
+    )
+    reciprocity_max_rel = reciprocity_max_abs / denom
+
+    passivity_min_eig = np.zeros(result.frequencies_hz.size, dtype=np.float64)
+    for idx, z in enumerate(matrix):
+        real_symmetric = 0.5 * (np.real(z) + np.real(z).T)
+        passivity_min_eig[idx] = float(np.min(np.linalg.eigvalsh(real_symmetric)))
+    passivity_ok = passivity_min_eig >= -float(passivity_tol)
+
+    low_ka_self_impedance: dict[str, NDArray[np.complex128]] = {}
+    low_ka_self_impedance_rel_error: dict[str, NDArray[np.float64]] = {}
+    if piston_radius_m_by_aperture:
+        name_to_index = {name: i for i, name in enumerate(result.aperture_names)}
+        for name, radius in piston_radius_m_by_aperture.items():
+            if name not in name_to_index:
+                raise ValueError(f"unknown aperture {name!r} for low-ka check")
+            expected = low_ka_baffled_piston_radiation_impedance(
+                radius,
+                result.frequencies_hz,
+                rho=rho,
+                c=c,
+            )
+            actual = matrix[:, name_to_index[name], name_to_index[name]]
+            ka = (2.0 * math.pi * result.frequencies_hz / float(c)) * float(radius)
+            rel = np.full(result.frequencies_hz.size, np.nan, dtype=np.float64)
+            mask = ka <= float(low_ka_max)
+            rel[mask] = (
+                np.abs(actual[mask] - expected[mask])
+                / np.maximum(np.abs(expected[mask]), np.finfo(np.float64).tiny)
+            )
+            low_ka_self_impedance[name] = expected
+            low_ka_self_impedance_rel_error[name] = rel
+
+    return RadiationMatrixDiagnostics(
+        reciprocity_max_abs=reciprocity_max_abs,
+        reciprocity_max_rel=reciprocity_max_rel,
+        passivity_min_eig=passivity_min_eig,
+        passivity_ok=passivity_ok,
+        low_ka_self_impedance=low_ka_self_impedance,
+        low_ka_self_impedance_rel_error=low_ka_self_impedance_rel_error,
+    )
+
+
 def _validate_frequencies(values: NDArray[np.float64]) -> NDArray[np.float64]:
     freqs = np.asarray(values, dtype=np.float64).reshape(-1)
     if freqs.size == 0:
@@ -167,6 +333,22 @@ def _validate_frequencies(values: NDArray[np.float64]) -> NDArray[np.float64]:
     if bad.size:
         raise ValueError(f"frequencies_hz must be positive finite values: {bad[:5]}")
     return freqs
+
+
+def _validate_matrix_shape(
+    result: RadiationImpedanceResult,
+) -> NDArray[np.complex128]:
+    matrix = np.asarray(result.impedance_matrix, dtype=np.complex128)
+    expected = (
+        np.asarray(result.frequencies_hz).reshape(-1).size,
+        len(result.aperture_names),
+        len(result.aperture_names),
+    )
+    if matrix.shape != expected:
+        raise ValueError(
+            f"impedance_matrix shape {matrix.shape} does not match expected {expected}"
+        )
+    return matrix
 
 
 def _validate_aperture_tags(aperture_tags: Mapping[str, list[int]]) -> list[str]:
