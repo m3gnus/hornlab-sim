@@ -10,7 +10,7 @@ For a real Synergy/MEH workflow, see
 
 Requirements:
     - ``hornlab-sim`` installed (this package)
-    - ``hornlab-solver`` and ``hornlab-mesher`` installed
+    - ``hornlab-bempp-bem`` and ``hornlab-mesher`` installed
     - A working OpenCL CPU runtime for bempp-cl (the "HornLab OpenCL CPU
       Python runtime" or an equivalent like POCL)
 """

@@ -20,7 +20,7 @@ package limited to reusable physics methods.
 | Slot-pocket Helmholtz tuning (BIGMEH-style slot = cavity + baffled hole) | LEM Helmholtz | `hornlab_sim.methods.helmholtz` (`bigmeh_slot_helmholtz`, `bigmeh_mid_chamber_helmholtz_from_params`) |
 | Mid-chamber resonance for a midport pocket | LEM Helmholtz | `hornlab_sim.methods.helmholtz` (`bigmeh_mid_chamber_helmholtz_from_params`) |
 | Axial duct impedance with viscothermal losses (segmented horn/duct) | TMM | `hornlab_sim.methods.transfer_matrix` (`duct_input_impedance`, `uniform_tube_matrix`, `make_slot_tmm_load`) |
-| Full 3D directivity from prescribed velocity sources (no LEM) | BEM | `hornlab_solver.solve_frequencies` directly, or `MEH-Lab/tools/bigmeh_parametric/wg_bem.py` for BIGMEH cabinets |
+| Full 3D directivity from prescribed velocity sources (no LEM) | BEM | `hornlab_bempp_bem.solve_frequencies` directly, or `MEH-Lab/tools/bigmeh_parametric/wg_bem.py` for BIGMEH cabinets |
 | Full 3D directivity with realistic LEM/TMM-derived source velocities at apertures | Source-basis BEM coupling | `hornlab_sim.methods.lem_to_bem` for generic/custom meshes; `MEH-Lab/tools/bigmeh_parametric/source_basis_wg_bem.py` plus `lem_wg_bem.py` for BIGMEH validation heatmaps |
 | Reduced FEM/BEM-style aperture back-loading | BEM radiation impedance matrix | `hornlab_sim.methods.radiation_impedance` |
 
@@ -38,7 +38,7 @@ When using `hornlab_sim.methods.lem_to_bem`:
 2. **Aperture name → list of physical group IDs.** BIGMEH meshes already produce multiple tags per slot (exit + walls). The coupling layer expects `dict[str, list[int]]`, not 1:1.
 3. **Area mismatch is a warning, not an error.** Sum of BEM face areas vs LEM-assumed S can disagree up to ~5% from mesh discretization. Warn, log to result metadata, continue.
 4. **Velocity vs acceleration mode.** Canonical solver default is `velocity_mode=ACCELERATION`. LEM emits volume velocity U. The coupling layer converts U → v_n and lets the solver apply jω. Don't pass acceleration directly.
-5. **Phase reference.** All LEM aperture velocities share an excitation reference (driver terminal voltage). Mesh-side BCs must use the same complex sign convention. The +iωρv convention matches `hornlab-solver` canonical settings.
+5. **Phase reference.** All LEM aperture velocities share an excitation reference (driver terminal voltage). Mesh-side BCs must use the same complex sign convention. The +iωρv convention matches `hornlab-bempp-bem` canonical settings.
 
 For BIGMEH/Synergy validation plots, use MEH-Lab's
 `bigmeh_parametric.source_basis_wg_bem.run()` (or the LEM-specific
@@ -55,7 +55,7 @@ basis caching, and canonical `results.npz`/heatmap schema.
 - DP0/P1, q=4 regular quadrature
 - +iωρv sign convention
 
-These defaults live in `hornlab_solver.SolveConfig`. Don't override without explicit reason.
+These defaults live in `hornlab_bempp_bem.SolveConfig`. Don't override without explicit reason.
 
 ## What lives where
 
@@ -67,7 +67,7 @@ These defaults live in `hornlab_solver.SolveConfig`. Don't override without expl
 | TMM CLI (BIGMEH-aware) | `MEH-Lab/tools/lumped/tmm_cli.py` |
 | Aperture radiation impedance matrices | `hornlab_sim.methods.radiation_impedance` |
 | BEM mesher | `hornlab-mesher` package |
-| BEM solver | `hornlab-solver` package |
+| BEM solver | `hornlab-bempp-bem` package |
 | BEM canonical caller for BIGMEH | `MEH-Lab/tools/bigmeh_parametric/wg_bem.py` |
 | MEH project orchestration / tool registry | `MEH-Lab/tools/meh_pipeline/` |
 

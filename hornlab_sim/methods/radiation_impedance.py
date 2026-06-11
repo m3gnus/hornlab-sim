@@ -6,7 +6,7 @@ aperture volume velocities to average aperture pressures:
 
     p_i(f) = sum_j Z_ij(f) Q_j(f)
 
-The implementation reuses the canonical ``hornlab_solver`` BEM path by
+The implementation reuses the canonical ``hornlab_bempp_bem`` BEM path by
 running one unit-velocity basis solve per source aperture.  It is not a
 full trace-space FEM-BEM coupling; it is the aperture-basis approximation
 intended for MEH cavities, ports, and throat/mouth interfaces where a small
@@ -25,8 +25,8 @@ from numpy.typing import NDArray
 from .lem_to_bem import _aperture_face_areas
 
 if TYPE_CHECKING:
-    from hornlab_solver import SolveConfig, SolveResult
-    from hornlab_solver.mesh import LoadedMesh
+    from hornlab_bempp_bem import SolveConfig, SolveResult
+    from hornlab_bempp_bem.mesh import LoadedMesh
 
 
 MeshLike = Union[str, Path, "LoadedMesh"]
@@ -72,7 +72,7 @@ def solve_aperture_matrix(
     Parameters
     ----------
     mesh
-        Path to a surface ``.msh`` or a preloaded ``hornlab_solver.LoadedMesh``.
+        Path to a surface ``.msh`` or a preloaded ``hornlab_bempp_bem.LoadedMesh``.
     aperture_tags
         Mapping from aperture name to one or more physical group IDs.
     frequencies_hz
@@ -89,10 +89,10 @@ def solve_aperture_matrix(
     RadiationImpedanceResult
         Dense aperture matrix ``Z[f, receiver, source]``.
     """
-    from hornlab_solver import SolveConfig as _SC
-    from hornlab_solver import solve_frequencies
-    from hornlab_solver.config import VelocityMode
-    from hornlab_solver.mesh import load_mesh
+    from hornlab_bempp_bem import SolveConfig as _SC
+    from hornlab_bempp_bem import solve_frequencies
+    from hornlab_bempp_bem.config import VelocityMode
+    from hornlab_bempp_bem.mesh import load_mesh
 
     if config is None:
         config = _SC()
@@ -128,7 +128,7 @@ def solve_aperture_matrix(
         result = solve_frequencies(loaded, freqs, source_config)
         if result.surface_pressure_avg is None:
             raise RuntimeError(
-                "hornlab_solver result did not include surface_pressure_avg; "
+                "hornlab_bempp_bem result did not include surface_pressure_avg; "
                 "cannot assemble aperture radiation matrix"
             )
 

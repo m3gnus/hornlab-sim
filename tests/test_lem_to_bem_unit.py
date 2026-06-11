@@ -160,7 +160,7 @@ def test_area_mismatch_warns_but_does_not_throw(monkeypatch):
         return fake_result
 
     monkeypatch.setattr(
-        "hornlab_solver.solve_frequencies", fake_solve_frequencies
+        "hornlab_bempp_bem.solve_frequencies", fake_solve_frequencies
     )
 
     freqs = np.array([100.0])
@@ -195,7 +195,7 @@ def test_velocity_sources_dict_captures_complex_u_over_area(monkeypatch):
         return _fake_solve_result(freqs=freqs)
 
     monkeypatch.setattr(
-        "hornlab_solver.solve_frequencies", fake_solve_frequencies
+        "hornlab_bempp_bem.solve_frequencies", fake_solve_frequencies
     )
 
     freqs = np.array([200.0, 500.0])
@@ -225,7 +225,7 @@ def test_multi_tag_aperture_applies_same_vn_to_each_tag(monkeypatch):
         return _fake_solve_result(freqs=freqs)
 
     monkeypatch.setattr(
-        "hornlab_solver.solve_frequencies", fake_solve_frequencies
+        "hornlab_bempp_bem.solve_frequencies", fake_solve_frequencies
     )
 
     freqs = np.array([100.0])
@@ -259,19 +259,19 @@ def test_concat_results_stacks_along_freq_axis():
 
 
 # ---------------------------------------------------------------------------
-# Fake SolveResult helper (avoids importing bempp / hornlab-solver internals)
+# Fake SolveResult helper (avoids importing bempp / hornlab-bempp-bem internals)
 # ---------------------------------------------------------------------------
 
 
 def _fake_solve_result(freqs):
-    """Build a minimal stand-in for hornlab_solver.SolveResult."""
+    """Build a minimal stand-in for hornlab_bempp_bem.SolveResult."""
     n_freq = len(freqs)
     n_planes = 2
     n_angles = 5
 
     # Try to import the real SolveResult to keep dataclass equality
-    from hornlab_solver.result import MeshInfo, SolveResult
-    from hornlab_solver import SolveConfig
+    from hornlab_bempp_bem.result import MeshInfo, SolveResult
+    from hornlab_bempp_bem import SolveConfig
 
     return SolveResult(
         frequencies_hz=np.asarray(freqs, dtype=np.float64),

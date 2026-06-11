@@ -41,7 +41,7 @@ Acoustic engineering rules — these are load-bearing, see
 
 5. **Phase reference.** All LEM aperture velocities share a common
    excitation reference (driver terminal voltage). The ``+i·omega·rho·v_n``
-   Neumann data convention here matches the canonical ``hornlab-solver``
+   Neumann data convention here matches the canonical ``hornlab-bempp-bem``
    sign convention.
 """
 
@@ -56,8 +56,8 @@ import numpy as np
 from numpy.typing import NDArray
 
 if TYPE_CHECKING:
-    from hornlab_solver import SolveConfig, SolveResult
-    from hornlab_solver.mesh import LoadedMesh
+    from hornlab_bempp_bem import SolveConfig, SolveResult
+    from hornlab_bempp_bem.mesh import LoadedMesh
 
 
 MeshLike = Union[str, Path, "LoadedMesh"]
@@ -101,7 +101,7 @@ def solve(
     Returns
     -------
     SolveResult
-        Standard ``hornlab_solver.SolveResult`` with complex pressure of
+        Standard ``hornlab_bempp_bem.SolveResult`` with complex pressure of
         shape ``(n_freq, n_planes, n_angles)``. The per-aperture v_n applied
         at each frequency is recorded in ``result.solver_log``.
 
@@ -122,10 +122,10 @@ def solve(
     now the layer is correct but not asymptotically optimal.
     """
     # Lazy import to keep core hornlab_sim install lightweight
-    from hornlab_solver import SolveConfig as _SC
-    from hornlab_solver import solve_frequencies
-    from hornlab_solver.config import BIEFormulation, VelocityMode
-    from hornlab_solver.mesh import load_mesh
+    from hornlab_bempp_bem import SolveConfig as _SC
+    from hornlab_bempp_bem import solve_frequencies
+    from hornlab_bempp_bem.config import BIEFormulation, VelocityMode
+    from hornlab_bempp_bem.mesh import load_mesh
 
     # ----- Validate input shapes / names ----------------------------------
 

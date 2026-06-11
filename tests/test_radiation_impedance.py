@@ -55,7 +55,7 @@ def test_aperture_matrix_uses_one_basis_per_source(monkeypatch):
         )
 
     monkeypatch.setattr(
-        "hornlab_solver.solve_frequencies",
+        "hornlab_bempp_bem.solve_frequencies",
         fake_solve_frequencies,
     )
 
@@ -93,7 +93,7 @@ def test_multi_tag_receiver_pressure_is_area_weighted(monkeypatch):
         )
 
     monkeypatch.setattr(
-        "hornlab_solver.solve_frequencies",
+        "hornlab_bempp_bem.solve_frequencies",
         fake_solve_frequencies,
     )
 

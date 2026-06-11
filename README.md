@@ -4,7 +4,7 @@ Reusable lumped, transfer-matrix, Helmholtz, and LEM-BEM coupling
 simulators for acoustic design work.
 
 This package holds small/fast acoustic models that can be used standalone or
-alongside a BEM pipeline such as `hornlab-mesher` + `hornlab-solver`.
+alongside a BEM pipeline such as `hornlab-mesher` + `hornlab-bempp-bem`.
 
 ## Modules
 
@@ -17,7 +17,7 @@ alongside a BEM pipeline such as `hornlab-mesher` + `hornlab-solver`.
 
 ```bash
 pip install -e .              # core (LEM/TMM/Helmholtz only)
-pip install -e .[bem]         # + hornlab-solver and hornlab-mesher for LEM-BEM coupling
+pip install -e .[bem]         # + hornlab-bempp-bem and hornlab-mesher for LEM-BEM coupling
 pip install -e .[dev]         # + pytest
 ```
 

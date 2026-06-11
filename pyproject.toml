@@ -14,7 +14,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest"]
 bem = [
-    "hornlab-solver",
+    "hornlab-bempp-bem",
     "hornlab-mesher",
 ]
 

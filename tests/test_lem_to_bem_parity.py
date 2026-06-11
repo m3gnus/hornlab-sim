@@ -2,7 +2,7 @@
 
 A single-aperture coupled solve with U = A * v_unit must produce the
 same pressure field as the equivalent canonical
-``hornlab_solver.solve_frequencies`` call with
+``hornlab_bempp_bem.solve_frequencies`` call with
 ``velocity_sources={tag: v_unit}, velocity_mode=VELOCITY``.
 
 This validates that the LEM->BEM coupling layer reduces correctly to
@@ -30,9 +30,9 @@ def test_single_aperture_unit_velocity_matches_canonical():
     pytest.importorskip("pyopencl")
 
     from hornlab_sim.methods import lem_to_bem
-    from hornlab_solver import SolveConfig, solve_frequencies
-    from hornlab_solver.config import BIEFormulation, LinearSolver, VelocityMode
-    from hornlab_solver.mesh import load_mesh
+    from hornlab_bempp_bem import SolveConfig, solve_frequencies
+    from hornlab_bempp_bem.config import BIEFormulation, LinearSolver, VelocityMode
+    from hornlab_bempp_bem.mesh import load_mesh
 
     # --- Build a small closed sphere mesh with tag 2 = source --------
     with tempfile.TemporaryDirectory() as td:
@@ -116,9 +116,9 @@ def test_multi_aperture_two_source_solve_completes():
     pytest.importorskip("pyopencl")
 
     from hornlab_sim.methods import lem_to_bem
-    from hornlab_solver import SolveConfig
-    from hornlab_solver.config import BIEFormulation, LinearSolver
-    from hornlab_solver.mesh import load_mesh
+    from hornlab_bempp_bem import SolveConfig
+    from hornlab_bempp_bem.config import BIEFormulation, LinearSolver
+    from hornlab_bempp_bem.mesh import load_mesh
 
     with tempfile.TemporaryDirectory() as td:
         mesh_path = Path(td) / "two_patch_sphere.msh"
