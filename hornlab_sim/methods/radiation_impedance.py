@@ -270,6 +270,7 @@ def terminated_chamber_port_branch(
     port_area_m2: float,
     port_length_m: float,
     interior_end_correction_length_m: float = 0.0,
+    series_resistance_pa_s_m3: float = 0.0,
     rho: float = RHO_AIR,
     c: float = C_AIR,
 ) -> TerminatedBranchResult:
@@ -291,6 +292,10 @@ def terminated_chamber_port_branch(
         "interior_end_correction_length_m",
         interior_end_correction_length_m,
     )
+    series_resistance = _nonnegative_finite(
+        "series_resistance_pa_s_m3",
+        series_resistance_pa_s_m3,
+    )
     rho_f = _positive_finite("rho", rho)
     c_f = _positive_finite("c", c)
 
@@ -298,7 +303,7 @@ def terminated_chamber_port_branch(
     compliance = volume / (rho_f * c_f * c_f)
     y_chamber = 1j * omega * compliance
     z_port = 1j * omega * rho_f * (length + interior) / area
-    z_series = z_port + load
+    z_series = series_resistance + z_port + load
     y_series = 1.0 / z_series
     total_admittance = y_chamber + y_series
     zin = 1.0 / total_admittance

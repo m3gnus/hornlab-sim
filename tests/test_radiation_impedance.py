@@ -191,6 +191,7 @@ def test_termination_load_reduces_in_phase_lr_pair():
 def test_terminated_chamber_port_branch_matches_lumped_network():
     freqs = np.array([100.0, 200.0])
     load = np.array([20.0 + 3.0j, 30.0 + 4.0j])
+    series_resistance = 123.0
 
     result = radiation_impedance.terminated_chamber_port_branch(
         freqs,
@@ -199,6 +200,7 @@ def test_terminated_chamber_port_branch_matches_lumped_network():
         port_area_m2=5.0e-4,
         port_length_m=0.02,
         interior_end_correction_length_m=0.001,
+        series_resistance_pa_s_m3=series_resistance,
         rho=1.2,
         c=340.0,
     )
@@ -206,7 +208,7 @@ def test_terminated_chamber_port_branch_matches_lumped_network():
     omega = 2.0 * np.pi * freqs
     y_chamber = 1j * omega * (2.0e-5 / (1.2 * 340.0 * 340.0))
     z_port = 1j * omega * 1.2 * 0.021 / 5.0e-4
-    y_series = 1.0 / (z_port + load)
+    y_series = 1.0 / (series_resistance + z_port + load)
     total_y = y_chamber + y_series
     np.testing.assert_allclose(result.input_impedance, 1.0 / total_y)
     np.testing.assert_allclose(
