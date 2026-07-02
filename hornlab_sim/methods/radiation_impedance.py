@@ -142,13 +142,27 @@ def solve_aperture_matrix(
     )
     solver_logs: list[dict] = []
 
-    for source_idx, source_name in enumerate(aperture_names):
+    source_dicts: list[dict[int, complex]] = []
+    for source_name in aperture_names:
         sources = {tag: 0.0 + 0.0j for tag in unique_tags}
         for tag in aperture_tags[source_name]:
             sources[int(tag)] = drive_velocity
+        source_dicts.append(sources)
 
-        source_config = replace(base_config, velocity_sources=sources)
-        result = api.solve_frequencies(loaded, freqs, source_config)
+    solve_multi = getattr(api, "solve_multi_source", None)
+    if solve_multi is not None and len(aperture_names) > 1:
+        # Multi-RHS: every basis column shares one assembly+factorization per
+        # frequency instead of one full sweep per aperture.
+        results = solve_multi(loaded, freqs, source_dicts, base_config)
+    else:
+        results = [
+            api.solve_frequencies(
+                loaded, freqs, replace(base_config, velocity_sources=sources)
+            )
+            for sources in source_dicts
+        ]
+
+    for source_idx, (source_name, result) in enumerate(zip(aperture_names, results)):
         if result.surface_pressure_avg is None:
             raise RuntimeError(
                 f"{api.name} result did not include surface_pressure_avg; "
@@ -200,10 +214,21 @@ def _metal_api(config: Any | None = None):
             return metal.native_config()
         return metal.native_config(formulation=formulation)
 
+    # None keeps the sequential per-source loop on pinned hornlab-metal-bem
+    # versions that predate multi-RHS solves.
+    solve_multi_source = None
+    if hasattr(metal, "solve_multi_source"):
+
+        def solve_multi_source(mesh, freqs, sources, config):
+            return metal.solve_multi_source(
+                mesh, sources, config, frequencies_hz=freqs
+            )
+
     return SimpleNamespace(
         name="metal",
         load_mesh=metal.load_mesh,
         solve_frequencies=metal.solve_frequencies,
+        solve_multi_source=solve_multi_source,
         VelocityMode=VelocityMode,
         default_config=default_config,
     )

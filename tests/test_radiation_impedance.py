@@ -101,6 +101,63 @@ def test_aperture_matrix_uses_one_basis_per_source(monkeypatch):
     np.testing.assert_allclose(result.impedance_matrix[:, 1, 1], [23, 24])
 
 
+def test_aperture_matrix_prefers_multi_source_backend(monkeypatch):
+    mesh = _fake_three_tag_mesh()
+    freqs = np.array([100.0, 200.0])
+    multi_calls = []
+
+    def fail_solve_frequencies(loaded, frequencies, cfg):
+        raise AssertionError(
+            "per-source solve_frequencies must not run when the backend "
+            "exposes solve_multi_source"
+        )
+
+    api = _patch_metal_api(monkeypatch, fail_solve_frequencies)
+
+    def fake_solve_multi_source(loaded, frequencies, source_dicts, cfg):
+        multi_calls.append([dict(sources) for sources in source_dicts])
+        results = []
+        for sources in source_dicts:
+            active = [tag for tag, value in sources.items() if value != 0]
+            assert len(active) == 1
+            source_factor = 10 if active[0] == 2 else 20
+            results.append(
+                _fake_result(
+                    frequencies,
+                    {
+                        2: np.array(
+                            [source_factor + 1, source_factor + 2], dtype=complex
+                        ),
+                        3: np.array(
+                            [source_factor + 3, source_factor + 4], dtype=complex
+                        ),
+                    },
+                )
+            )
+        return results
+
+    api.solve_multi_source = fake_solve_multi_source
+
+    result = radiation_impedance.solve_aperture_matrix(
+        mesh,
+        {"driver": [2], "port": [3]},
+        freqs,
+        normal_velocity=2.0,
+    )
+
+    # ONE multi-RHS call carrying every basis column, in aperture order.
+    assert len(multi_calls) == 1
+    assert multi_calls[0] == [
+        {2: 2.0 + 0.0j, 3: 0.0 + 0.0j},
+        {2: 0.0 + 0.0j, 3: 2.0 + 0.0j},
+    ]
+    # Same matrix as test_aperture_matrix_uses_one_basis_per_source.
+    np.testing.assert_allclose(result.impedance_matrix[:, 0, 0], [11, 12])
+    np.testing.assert_allclose(result.impedance_matrix[:, 1, 0], [13, 14])
+    np.testing.assert_allclose(result.impedance_matrix[:, 0, 1], [21, 22])
+    np.testing.assert_allclose(result.impedance_matrix[:, 1, 1], [23, 24])
+
+
 def test_velocity_mode_matrix_normalizes_by_volume_velocity_v_times_area(monkeypatch):
     mesh = _fake_three_tag_mesh()
 
