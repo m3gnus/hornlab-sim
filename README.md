@@ -16,8 +16,12 @@ alongside the canonical Metal BEM pipeline.
 ## Install
 
 ```bash
-pip install -e .              # core + Metal BEM coupling
-pip install -e .[dev]         # + pytest
+pip install "hornlab-sim @ git+https://github.com/m3gnus/hornlab-sim.git"
+
+# Local development checkout:
+git clone https://github.com/m3gnus/hornlab-sim.git
+cd hornlab-sim
+pip install -e ".[dev]"
 ```
 
 ## Agent / user guidance
@@ -28,3 +32,7 @@ design question being asked.
 For LEM→BEM coupling, suppress LEM-side external radiation loading on any
 BEM-radiated aperture. Use `end_corr="none"` with Helmholtz helpers and
 `Port(..., radiation_external=False)` with bandpass ports.
+
+## License
+
+AGPL-3.0-or-later

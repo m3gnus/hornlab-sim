@@ -5,8 +5,8 @@ velocity source, and runs the coupling layer end-to-end with a 3-frequency
 sweep. Intended as the "does it import and run" smoke test, not a
 physically meaningful simulation.
 
-For a real Synergy/MEH workflow, see
-``MEH-Lab/scripts/synergy_directivity_example.py``.
+Real projects should wrap this lower-level coupling with their own geometry,
+observation-frame, caching, and result-schema adapters.
 
 Requirements:
     - ``hornlab-sim`` installed (this package)

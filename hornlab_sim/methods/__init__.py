@@ -10,5 +10,5 @@ Each method is a plain module. Import what you need:
         radiation_impedance,
     )
 
-See ../AGENTS.md for the agent-facing decision tree.
+See the repository-root AGENTS.md for the agent-facing decision tree.
 """

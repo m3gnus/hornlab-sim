@@ -1,15 +1,11 @@
 # hornlab-sim — Agent Instructions
 
-> Parent rules: [../AGENTS.md](../AGENTS.md)
-> Sibling rules: [../MEH-Lab/AGENTS.md](../MEH-Lab/AGENTS.md)
-
 This package is the canonical home for lumped (LEM), transfer-matrix (TMM),
 Helmholtz, and LEM↔BEM coupling simulators. There is **no global project
 orchestrator**, **no project registry**, **no MEH intent table** in this
 package. Read this file and pick the right reusable method.
 
-Project-specific orchestration belongs in the consuming project. For MEH-Lab
-studies, use `MEH-Lab/tools/meh_pipeline/` as the workflow layer and keep this
+Project-specific orchestration belongs in the consuming project. Keep this
 package limited to reusable physics methods.
 
 ## Decision tree
@@ -20,8 +16,8 @@ package limited to reusable physics methods.
 | Slot-pocket Helmholtz tuning (BIGMEH-style slot = cavity + baffled hole) | LEM Helmholtz | `hornlab_sim.methods.helmholtz` (`bigmeh_slot_helmholtz`, `bigmeh_mid_chamber_helmholtz_from_params`) |
 | Mid-chamber resonance for a midport pocket | LEM Helmholtz | `hornlab_sim.methods.helmholtz` (`bigmeh_mid_chamber_helmholtz_from_params`) |
 | Axial duct impedance with viscothermal losses (segmented horn/duct) | TMM | `hornlab_sim.methods.transfer_matrix` (`duct_input_impedance`, `uniform_tube_matrix`, `make_slot_tmm_load`) |
-| Full 3D directivity from prescribed velocity sources (no LEM) | BEM | `hornlab_metal_bem.solve_frequencies` directly, or `MEH-Lab/tools/bigmeh_parametric/wg_bem.py` for BIGMEH cabinets |
-| Full 3D directivity with realistic LEM/TMM-derived source velocities at apertures | Source-basis BEM coupling | `hornlab_sim.methods.lem_to_bem` for generic/custom meshes; `MEH-Lab/tools/bigmeh_parametric/source_basis_wg_bem.py` plus `lem_wg_bem.py` for BIGMEH validation heatmaps |
+| Full 3D directivity from prescribed velocity sources (no LEM) | BEM | `hornlab_metal_bem` directly |
+| Full 3D directivity with realistic LEM/TMM-derived source velocities at apertures | Source-basis BEM coupling | `hornlab_sim.methods.lem_to_bem` for generic/custom meshes; consuming project adapters own observation frames, caching, and result schemas |
 | Reduced FEM/BEM-style aperture back-loading | BEM radiation impedance matrix | `hornlab_sim.methods.radiation_impedance` |
 | Voltage-driven coupled cone+port velocities for a BEM-terminated cardioid branch | LEM driver/BEM termination coupling | `hornlab_sim.methods.driver_coupling` |
 
@@ -42,14 +38,11 @@ When using `hornlab_sim.methods.lem_to_bem`:
 4. **Velocity vs acceleration mode.** Canonical solver default is `velocity_mode=ACCELERATION`. LEM emits volume velocity U. The coupling layer converts U → v_n and lets the solver apply jω. Don't pass acceleration directly.
 5. **Phase reference.** All LEM aperture velocities share an excitation reference (driver terminal voltage). Mesh-side BCs must use the same complex sign convention. The +iωρv convention matches `hornlab_metal_bem` canonical settings.
 
-For BIGMEH/Synergy validation plots, use MEH-Lab's
-`bigmeh_parametric.source_basis_wg_bem.run()` (or the LEM-specific
-`lem_wg_bem.run()` wrapper) instead of calling this generic solver-level
-coupling directly. Those adapters route the BEM solve through
-`bigmeh_parametric.wg_bem.run`, which owns the BIGMEH observation frame,
-basis caching, and canonical `results.npz`/heatmap schema.
+For project validation plots, prefer a project adapter over calling this
+generic solver-level coupling directly when the project owns a specific
+observation frame, basis cache, or result schema.
 
-## Solver settings (BEM side, from parent AGENTS.md §1)
+## Solver settings (BEM side)
 
 - BM=off everywhere
 - COMPLEX_K formulation; complex_k_shift=0.005 when enclosed
@@ -64,18 +57,10 @@ These defaults live in `hornlab_metal_bem.SolveConfig`. Don't override without e
 | Concept | Location |
 |---|---|
 | LEM/TMM/Helmholtz core math | `hornlab_sim.methods.*` (this package) |
-| BIGMEH cabinet geometry, params, slot interpretation knobs | `MEH-Lab/tools/bigmeh_parametric/` |
-| BIGMEH → lumped adapter | `MEH-Lab/tools/lumped/from_bigmeh.py` |
-| TMM CLI (BIGMEH-aware) | `MEH-Lab/tools/lumped/tmm_cli.py` |
 | Aperture radiation impedance matrices | `hornlab_sim.methods.radiation_impedance` |
-| BEM mesher | `hornlab-waveguide-mesher` sibling package |
-| BEM solver | `hornlab-metal-bem` sibling package |
-| BEM canonical caller for BIGMEH | `MEH-Lab/tools/bigmeh_parametric/wg_bem.py` |
-| MEH project orchestration / tool registry | `MEH-Lab/tools/meh_pipeline/` |
+| Project geometry, params, adapters, and CLIs | consuming project |
+| BEM mesher | `hornlab-waveguide-mesher` |
+| BEM solver | `hornlab-metal-bem` |
 
-If a new MEH project-specific calculation needs to be added, it goes in
-MEH-Lab. If it's general lumped or coupling physics, it goes here.
-
-## Auto-commit policy
-
-Per parent `AGENTS.md`. Commit logical units without asking. Include doc updates in the same commit as the code change.
+If a calculation is project-specific, it belongs in the consuming project. If
+it is general lumped or coupling physics, it belongs here.
