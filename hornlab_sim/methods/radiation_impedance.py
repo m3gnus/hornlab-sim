@@ -6,8 +6,8 @@ aperture volume velocities to average aperture pressures:
 
     p_i(f) = sum_j Z_ij(f) Q_j(f)
 
-The implementation dispatches to the selected canonical BEM backend and runs
-one unit-velocity basis solve per source aperture.  It is not a full
+The implementation runs the canonical Metal BEM path with one unit-velocity
+basis solve per source aperture.  It is not a full
 trace-space FEM-BEM coupling; it is the aperture-basis approximation intended
 for MEH cavities, ports, and throat/mouth interfaces where a small number of
 patch-averaged unknowns is a useful first model.
@@ -18,17 +18,17 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 import math
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Mapping, Union
 
 import numpy as np
 from numpy.typing import NDArray
 
-from . import _bem_backend
 from .lem_to_bem import _aperture_face_areas
 
 if TYPE_CHECKING:
-    from hornlab_bempp_bem import SolveConfig, SolveResult
-    from hornlab_bempp_bem.mesh import LoadedMesh
+    from hornlab_metal_bem import SolveConfig, SolveResult
+    from hornlab_metal_bem.mesh import LoadedMesh
 
 
 MeshLike = Union[str, Path, "LoadedMesh", Any]
@@ -98,18 +98,14 @@ def solve_aperture_matrix(
     Parameters
     ----------
     mesh
-        Path to a surface ``.msh`` or a preloaded ``hornlab_bempp_bem.LoadedMesh``.
+        Path to a surface ``.msh`` or a preloaded ``hornlab_metal_bem.LoadedMesh``.
     aperture_tags
         Mapping from aperture name to one or more physical group IDs.
     frequencies_hz
         Positive frequencies to solve.
     config
-        Optional BEM solve config from ``hornlab_metal_bem`` or
-        ``hornlab_bempp_bem``. The config type selects the backend. If
-        omitted, ``HORNLAB_SIM_BEM_BACKEND=metal|bempp`` selects a backend;
-        unset or ``auto`` prefers available native Metal and falls back to
-        bempp. The default formulation remains the backend standard
-        formulation. The function overrides ``velocity_mode`` and
+        Optional BEM solve config from ``hornlab_metal_bem``. If omitted, a
+        native Metal config is used. The function overrides ``velocity_mode`` and
         ``velocity_sources`` for each source basis.
     normal_velocity
         Unit normal velocity imposed on all faces of the active source
@@ -126,8 +122,7 @@ def solve_aperture_matrix(
     if abs(drive_velocity) <= 0.0:
         raise ValueError("normal_velocity must be nonzero")
 
-    backend = _bem_backend.resolve_backend(config)
-    api = _bem_backend.backend_api(backend)
+    api = _metal_api(config)
     if config is None:
         config = api.default_config(None)
 
@@ -184,6 +179,33 @@ def solve_aperture_matrix(
         aperture_area_m2=aperture_area_m2,
         impedance_matrix=matrix,
         solver_logs=solver_logs,
+    )
+
+
+def _metal_api(config: Any | None = None):
+    """Return the Metal BEM API used by the radiation matrix solver."""
+    if config is not None:
+        module = type(config).__module__
+        if not module.startswith("hornlab_metal_bem"):
+            raise ValueError(
+                f"radiation_impedance requires a hornlab_metal_bem "
+                f"SolveConfig; got {type(config)!r}"
+            )
+
+    import hornlab_metal_bem as metal
+    from hornlab_metal_bem.config import VelocityMode
+
+    def default_config(formulation: str | None):
+        if formulation is None:
+            return metal.native_config()
+        return metal.native_config(formulation=formulation)
+
+    return SimpleNamespace(
+        name="metal",
+        load_mesh=metal.load_mesh,
+        solve_frequencies=metal.solve_frequencies,
+        VelocityMode=VelocityMode,
+        default_config=default_config,
     )
 
 

@@ -9,14 +9,11 @@ description = "Canonical lumped (LEM/TMM/Helmholtz) and LEM-BEM coupling simulat
 requires-python = ">=3.10"
 dependencies = [
     "numpy",
+    "hornlab-metal-bem",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest"]
-bem = [
-    "hornlab-bempp-bem",
-    "hornlab-mesher",
-]
 
 [tool.setuptools.packages.find]
 include = ["hornlab_sim*"]

@@ -14,13 +14,12 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from hornlab_sim.methods import _bem_backend
 from hornlab_sim.methods import lem_to_bem
 from hornlab_sim.methods.lem_to_bem import _aperture_face_areas, _concat_results
 
 
 # ---------------------------------------------------------------------------
-# Test fixtures: a fake mesh and a fake SolveResult so we can avoid bempp.
+# Test fixtures: a fake mesh and a fake SolveResult so we can avoid Metal.
 # ---------------------------------------------------------------------------
 
 
@@ -40,27 +39,26 @@ class _FakeConfig:
 class _FakeSolveResult:
     frequencies_hz: np.ndarray
     pressure_complex: np.ndarray
-    spl_db: np.ndarray
+    directivity_db: np.ndarray
     impedance: np.ndarray
     timings: dict[str, float] = field(default_factory=dict)
     solver_log: list[dict] = field(default_factory=list)
     surface_pressure_avg: dict[int, np.ndarray] | None = None
 
     @property
-    def directivity_db(self):
-        return self.spl_db
+    def spl_db(self):
+        return self.directivity_db
 
 
-def _patch_bem_backend(monkeypatch, solve_frequencies):
+def _patch_metal_api(monkeypatch, solve_frequencies):
     api = SimpleNamespace(
-        name="bempp",
+        name="metal",
         load_mesh=lambda path, scale=1.0: path,
         solve_frequencies=solve_frequencies,
         VelocityMode=_FakeVelocityMode,
         default_config=lambda formulation: _FakeConfig(),
     )
-    monkeypatch.setattr(_bem_backend, "resolve_backend", lambda config=None: "bempp")
-    monkeypatch.setattr(_bem_backend, "backend_api", lambda backend: api)
+    monkeypatch.setattr(lem_to_bem, "_metal_api", lambda config=None: api)
     return api
 
 
@@ -199,7 +197,7 @@ def test_area_mismatch_warns_but_does_not_throw(monkeypatch):
     def fake_solve_frequencies(loaded, freqs_list, cfg):
         return fake_result
 
-    _patch_bem_backend(monkeypatch, fake_solve_frequencies)
+    _patch_metal_api(monkeypatch, fake_solve_frequencies)
 
     freqs = np.array([100.0])
     U = {
@@ -232,7 +230,7 @@ def test_velocity_sources_dict_captures_complex_u_over_area(monkeypatch):
         captured.append({"freqs": list(freqs), "sources": dict(cfg.velocity_sources)})
         return _fake_solve_result(freqs=freqs)
 
-    _patch_bem_backend(monkeypatch, fake_solve_frequencies)
+    _patch_metal_api(monkeypatch, fake_solve_frequencies)
 
     freqs = np.array([200.0, 500.0])
     U = np.array([3.0 + 4.0j, 1.0 - 1.0j])  # m^3/s
@@ -260,7 +258,7 @@ def test_multi_tag_aperture_applies_same_vn_to_each_tag(monkeypatch):
         captured.append(dict(cfg.velocity_sources))
         return _fake_solve_result(freqs=freqs)
 
-    _patch_bem_backend(monkeypatch, fake_solve_frequencies)
+    _patch_metal_api(monkeypatch, fake_solve_frequencies)
 
     freqs = np.array([100.0])
     U = np.array([2.0 + 0.0j])
@@ -293,12 +291,12 @@ def test_concat_results_stacks_along_freq_axis():
 
 
 # ---------------------------------------------------------------------------
-# Fake SolveResult helper (avoids importing bempp / hornlab-bempp-bem internals)
+# Fake SolveResult helper (avoids importing solver internals)
 # ---------------------------------------------------------------------------
 
 
 def _fake_solve_result(freqs):
-    """Build a minimal stand-in for hornlab_bempp_bem.SolveResult."""
+    """Build a minimal stand-in for hornlab_metal_bem.SolveResult."""
     n_freq = len(freqs)
     n_planes = 2
     n_angles = 5
@@ -306,7 +304,7 @@ def _fake_solve_result(freqs):
     return _FakeSolveResult(
         frequencies_hz=np.asarray(freqs, dtype=np.float64),
         pressure_complex=np.zeros((n_freq, n_planes, n_angles), dtype=np.complex128),
-        spl_db=np.zeros((n_freq, n_planes, n_angles), dtype=np.float64),
+        directivity_db=np.zeros((n_freq, n_planes, n_angles), dtype=np.float64),
         impedance=np.zeros(n_freq, dtype=np.complex128),
         timings={},
         solver_log=[],

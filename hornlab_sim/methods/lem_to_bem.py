@@ -41,8 +41,7 @@ Acoustic engineering rules — these are load-bearing, see
 
 5. **Phase reference.** All LEM aperture velocities share a common
    excitation reference (driver terminal voltage). The ``+i·omega·rho·v_n``
-   Neumann data convention here matches the canonical ``hornlab-bempp-bem``
-   sign convention.
+   Neumann data convention here matches the canonical Metal sign convention.
 """
 
 from __future__ import annotations
@@ -50,16 +49,15 @@ from __future__ import annotations
 import warnings
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Mapping, Union
 
 import numpy as np
 from numpy.typing import NDArray
 
-from . import _bem_backend
-
 if TYPE_CHECKING:
-    from hornlab_bempp_bem import SolveConfig, SolveResult
-    from hornlab_bempp_bem.mesh import LoadedMesh
+    from hornlab_metal_bem import SolveConfig, SolveResult
+    from hornlab_metal_bem.mesh import LoadedMesh
 
 
 MeshLike = Union[str, Path, "LoadedMesh", Any]
@@ -90,11 +88,8 @@ def solve(
     frequencies_hz : array of float
         Frequencies to solve at, in Hz.
     config : SolveConfig, optional
-        Solver configuration from ``hornlab_metal_bem`` or
-        ``hornlab_bempp_bem``. The config type selects the backend. If
-        omitted, ``HORNLAB_SIM_BEM_BACKEND=metal|bempp`` selects a backend;
-        unset or ``auto`` prefers available native Metal and falls back to
-        bempp. The default formulation remains ``COMPLEX_K``. The coupling
+        Solver configuration from ``hornlab_metal_bem``. If omitted, a
+        native Metal ``COMPLEX_K`` config is used. The coupling
         layer always overrides ``velocity_mode`` and ``velocity_sources``
         per frequency.
     area_tolerance : float, default 0.05
@@ -106,7 +101,7 @@ def solve(
     Returns
     -------
     SolveResult
-        Selected backend's SolveResult with complex pressure of shape
+        Metal SolveResult with complex pressure of shape
         ``(n_freq, n_planes, n_angles)``. The per-aperture v_n applied at
         each frequency is recorded in ``result.solver_log``.
 
@@ -154,8 +149,7 @@ def solve(
 
     # ----- Resolve config -------------------------------------------------
 
-    backend = _bem_backend.resolve_backend(config)
-    api = _bem_backend.backend_api(backend)
+    api = _metal_api(config)
     if config is None:
         config = api.default_config("complex_k")
 
@@ -231,8 +225,8 @@ def _aperture_face_areas(
     """Return total face area in m^2 per aperture name."""
     grid = loaded.grid
 
-    # Bempp Grid stores vertices as (3, n_vertices) and elements as
-    # (3, n_elements) with vertex indices. Defensive transpose.
+    # Some mesh loaders expose vertices/elements transposed. Normalize to
+    # row-major arrays before computing triangle areas.
     vertices = np.asarray(grid.vertices)
     if vertices.shape[0] == 3 and vertices.shape[1] != 3:
         vertices = vertices.T
@@ -282,7 +276,6 @@ def _concat_results(per_freq_results, frequencies_hz):
         [r.directivity_db for r in per_freq_results], axis=0
     )
     impedance = np.concatenate([r.impedance for r in per_freq_results], axis=0)
-    spl_field = _bem_backend.normalized_spl_field_name(first)
 
     # Per-tag surface pressure (if populated)
     surface_pressure_avg = None
@@ -297,7 +290,7 @@ def _concat_results(per_freq_results, frequencies_hz):
         first,
         frequencies_hz=np.asarray(frequencies_hz, dtype=np.float64),
         pressure_complex=pressure_complex,
-        **{spl_field: directivity_db},
+        directivity_db=directivity_db,
         impedance=impedance,
         surface_pressure_avg=surface_pressure_avg,
         solver_log=[entry for r in per_freq_results for entry in r.solver_log],
@@ -306,4 +299,31 @@ def _concat_results(per_freq_results, frequencies_hz):
                 r.timings.get("total_s", 0.0) for r in per_freq_results
             )
         },
+    )
+
+
+def _metal_api(config: Any | None = None):
+    """Return the Metal BEM API used by the coupling layer."""
+    if config is not None:
+        module = type(config).__module__
+        if not module.startswith("hornlab_metal_bem"):
+            raise ValueError(
+                f"hornlab-sim BEM coupling requires a hornlab_metal_bem "
+                f"SolveConfig; got {type(config)!r}"
+            )
+
+    import hornlab_metal_bem as metal
+    from hornlab_metal_bem.config import VelocityMode
+
+    def default_config(formulation: str | None):
+        if formulation is None:
+            return metal.native_config()
+        return metal.native_config(formulation=formulation)
+
+    return SimpleNamespace(
+        name="metal",
+        load_mesh=metal.load_mesh,
+        solve_frequencies=metal.solve_frequencies,
+        VelocityMode=VelocityMode,
+        default_config=default_config,
     )

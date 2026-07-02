@@ -10,9 +10,8 @@ For a real Synergy/MEH workflow, see
 
 Requirements:
     - ``hornlab-sim`` installed (this package)
-    - ``hornlab-bempp-bem`` and ``hornlab-mesher`` installed
-    - A working OpenCL CPU runtime for bempp-cl (the "HornLab OpenCL CPU
-      Python runtime" or an equivalent like POCL)
+    - ``hornlab-metal-bem`` installed with its native runtime available
+    - ``gmsh`` installed for the generated smoke mesh
 """
 
 from __future__ import annotations
@@ -95,7 +94,7 @@ def main():
         print()
         print(f"frequencies_hz:  {result.frequencies_hz}")
         print(f"pressure shape:  {result.pressure_complex.shape}")
-        print(f"on-axis SPL dB:  {result.spl_db[:, 0, 0]}")
+        print(f"on-axis directivity dB:  {result.directivity_db[:, 0, 0]}")
         print("lem_to_bem smoke: OK")
 
 

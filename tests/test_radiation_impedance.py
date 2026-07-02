@@ -6,7 +6,6 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from hornlab_sim.methods import _bem_backend
 from hornlab_sim.methods import radiation_impedance
 
 
@@ -22,16 +21,15 @@ class _FakeConfig:
     velocity_sources: dict[int, complex] = field(default_factory=dict)
 
 
-def _patch_bem_backend(monkeypatch, solve_frequencies):
+def _patch_metal_api(monkeypatch, solve_frequencies):
     api = SimpleNamespace(
-        name="bempp",
+        name="metal",
         load_mesh=lambda path, scale=1.0: path,
         solve_frequencies=solve_frequencies,
         VelocityMode=_FakeVelocityMode,
         default_config=lambda formulation: _FakeConfig(),
     )
-    monkeypatch.setattr(_bem_backend, "resolve_backend", lambda config=None: "bempp")
-    monkeypatch.setattr(_bem_backend, "backend_api", lambda backend: api)
+    monkeypatch.setattr(radiation_impedance, "_metal_api", lambda config=None: api)
     return api
 
 
@@ -81,7 +79,7 @@ def test_aperture_matrix_uses_one_basis_per_source(monkeypatch):
             },
         )
 
-    _patch_bem_backend(monkeypatch, fake_solve_frequencies)
+    _patch_metal_api(monkeypatch, fake_solve_frequencies)
 
     result = radiation_impedance.solve_aperture_matrix(
         mesh,
@@ -114,7 +112,7 @@ def test_velocity_mode_matrix_normalizes_by_volume_velocity_v_times_area(monkeyp
             },
         )
 
-    _patch_bem_backend(monkeypatch, fake_solve_frequencies)
+    _patch_metal_api(monkeypatch, fake_solve_frequencies)
 
     result = radiation_impedance.solve_aperture_matrix(
         mesh,
@@ -140,7 +138,7 @@ def test_multi_tag_receiver_pressure_is_area_weighted(monkeypatch):
             },
         )
 
-    _patch_bem_backend(monkeypatch, fake_solve_frequencies)
+    _patch_metal_api(monkeypatch, fake_solve_frequencies)
 
     result = radiation_impedance.solve_aperture_matrix(
         mesh,
