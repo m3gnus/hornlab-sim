@@ -82,6 +82,19 @@ def _hand_driver_terms(
     }
 
 
+def _direct_peak_frequency(freqs, *, driver: Driver, **kwargs):
+    result = driver_coupling.coupled_direct_radiator_response(
+        freqs,
+        driver=driver,
+        z_self=np.zeros(freqs.shape, dtype=np.complex128),
+        **kwargs,
+    )
+    peak_freq = freqs[
+        int(np.argmax(np.abs(result.electrical_input_impedance)))
+    ]
+    return peak_freq, result
+
+
 def test_fixed_velocity_ratio_invariant_for_both_rear_polarities():
     freqs = np.array([160.0, 315.0, 630.0, 1000.0])
     z_port_from_mf = np.array([4.0 + 2.0j, 5.0 + 3.0j, 6.0 + 4.0j, 7.0 + 5.0j])
@@ -299,4 +312,131 @@ def test_mutual_impedance_fallbacks_are_zero_arrays():
     np.testing.assert_allclose(
         result_none.electrical_input_impedance,
         result_zero.electrical_input_impedance,
+    )
+
+
+def test_direct_radiator_free_air_impedance_peak_tracks_mmd_cms_resonance():
+    driver = _base_driver(Le=0.0, Rms=0.35)
+    fc = 1.0 / (2.0 * math.pi * math.sqrt(driver.Mmd * driver.Cms))
+    freqs = np.linspace(0.6 * fc, 1.4 * fc, 2001)
+
+    peak_freq, result = _direct_peak_frequency(freqs, driver=driver)
+
+    assert peak_freq == pytest.approx(fc, rel=0.02)
+    assert result.mmd_correction_kg == pytest.approx(0.0)
+    assert result.diagnostics["mmd_source"] == "Mmd"
+    assert result.diagnostics["rear_chamber_compliance"] is None
+
+
+def test_direct_radiator_rear_chamber_raises_impedance_peak_frequency():
+    driver = _base_driver(Le=0.0, Rms=0.35)
+    fc = 1.0 / (2.0 * math.pi * math.sqrt(driver.Mmd * driver.Cms))
+    freqs = np.linspace(0.6 * fc, 2.8 * fc, 5001)
+
+    free_peak, _ = _direct_peak_frequency(freqs, driver=driver)
+    boxed_peak, boxed = _direct_peak_frequency(
+        freqs,
+        driver=driver,
+        rear_chamber_volume_m3=5.0e-3,
+    )
+
+    assert boxed_peak > free_peak
+    assert boxed.diagnostics["rear_chamber_compliance"] == pytest.approx(
+        5.0e-3
+        / (
+            radiation_impedance.RHO_AIR
+            * radiation_impedance.C_AIR
+            * radiation_impedance.C_AIR
+        )
+    )
+
+
+def test_direct_radiator_mass_controlled_velocity_and_excursion():
+    driver = _base_driver(Le=0.0, Rms=0.35)
+    freqs = np.array([5000.0, 10000.0])
+
+    result = driver_coupling.coupled_direct_radiator_response(
+        freqs,
+        driver=driver,
+        z_self=np.zeros(freqs.shape, dtype=np.complex128),
+    )
+
+    ratio = abs(result.cone_volume_velocity[1]) / abs(
+        result.cone_volume_velocity[0]
+    )
+    assert ratio == pytest.approx(0.5, rel=0.05)
+    omega = 2.0 * np.pi * freqs
+    np.testing.assert_allclose(
+        result.cone_excursion_m,
+        np.abs(result.cone_volume_velocity)
+        / (omega * result.diagnostics["sd_eff_m2"]),
+        rtol=1e-12,
+        atol=0.0,
+    )
+
+
+def test_direct_radiator_source_resistance_reduces_drive_only():
+    driver = _base_driver(Le=0.0, Rms=0.35)
+    freqs = np.array([60.0, 90.0, 200.0, 800.0, 2000.0])
+    z_self = np.zeros(freqs.shape, dtype=np.complex128)
+
+    ideal = driver_coupling.coupled_direct_radiator_response(
+        freqs,
+        driver=driver,
+        z_self=z_self,
+    )
+    series = driver_coupling.coupled_direct_radiator_response(
+        freqs,
+        driver=driver,
+        z_self=z_self,
+        rg_ohm=2.0,
+    )
+
+    assert np.all(
+        np.abs(series.cone_volume_velocity) < np.abs(ideal.cone_volume_velocity)
+    )
+    np.testing.assert_allclose(
+        series.electrical_input_impedance,
+        ideal.electrical_input_impedance,
+        rtol=1e-12,
+        atol=1e-12,
+    )
+
+
+def test_direct_radiator_huge_rear_chamber_converges_to_no_rear_chamber():
+    driver = _base_driver(Le=0.0, Rms=0.35)
+    freqs = np.logspace(math.log10(30.0), math.log10(3000.0), 32)
+    omega = 2.0 * np.pi * freqs
+    z_self = 18.0 + 1j * 0.004 * omega
+
+    open_back = driver_coupling.coupled_direct_radiator_response(
+        freqs,
+        driver=driver,
+        z_self=z_self,
+        rear_chamber_volume_m3=None,
+    )
+    huge_box = driver_coupling.coupled_direct_radiator_response(
+        freqs,
+        driver=driver,
+        z_self=z_self,
+        rear_chamber_volume_m3=1.0e12,
+    )
+
+    np.testing.assert_allclose(
+        huge_box.cone_volume_velocity,
+        open_back.cone_volume_velocity,
+        rtol=1e-10,
+        atol=1e-18,
+    )
+    np.testing.assert_allclose(
+        huge_box.electrical_input_impedance,
+        open_back.electrical_input_impedance,
+        rtol=1e-10,
+        atol=1e-12,
+    )
+    np.testing.assert_allclose(
+        huge_box.acoustic_load,
+        open_back.acoustic_load,
+        rtol=1e-10,
+        atol=1e-12,
     )
