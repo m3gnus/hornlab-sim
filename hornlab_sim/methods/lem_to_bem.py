@@ -61,6 +61,7 @@ if TYPE_CHECKING:
 
 
 MeshLike = Union[str, Path, "LoadedMesh", Any]
+METAL_EXTRA_INSTALL_HINT = 'pip install "hornlab-sim[metal]"'
 
 
 def solve(
@@ -312,8 +313,19 @@ def _metal_api(config: Any | None = None):
                 f"SolveConfig; got {type(config)!r}"
             )
 
-    import hornlab_metal_bem as metal
-    from hornlab_metal_bem.config import VelocityMode
+    try:
+        import hornlab_metal_bem as metal
+        from hornlab_metal_bem.config import VelocityMode
+    except ModuleNotFoundError as exc:
+        if exc.name == "hornlab_metal_bem" or str(exc.name).startswith(
+            "hornlab_metal_bem."
+        ):
+            raise ImportError(
+                "hornlab-sim BEM coupling requires the optional "
+                "hornlab_metal_bem dependency. Install it with: "
+                f"{METAL_EXTRA_INSTALL_HINT}"
+            ) from exc
+        raise
 
     def default_config(formulation: str | None):
         if formulation is None:

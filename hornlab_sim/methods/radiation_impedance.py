@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any, Mapping, Union
 import numpy as np
 from numpy.typing import NDArray
 
-from .lem_to_bem import _aperture_face_areas
+from .lem_to_bem import METAL_EXTRA_INSTALL_HINT, _aperture_face_areas
 
 if TYPE_CHECKING:
     from hornlab_metal_bem import SolveConfig, SolveResult
@@ -206,8 +206,19 @@ def _metal_api(config: Any | None = None):
                 f"SolveConfig; got {type(config)!r}"
             )
 
-    import hornlab_metal_bem as metal
-    from hornlab_metal_bem.config import VelocityMode
+    try:
+        import hornlab_metal_bem as metal
+        from hornlab_metal_bem.config import VelocityMode
+    except ModuleNotFoundError as exc:
+        if exc.name == "hornlab_metal_bem" or str(exc.name).startswith(
+            "hornlab_metal_bem."
+        ):
+            raise ImportError(
+                "hornlab-sim radiation impedance requires the optional "
+                "hornlab_metal_bem dependency. Install it with: "
+                f"{METAL_EXTRA_INSTALL_HINT}"
+            ) from exc
+        raise
 
     def default_config(formulation: str | None):
         if formulation is None:

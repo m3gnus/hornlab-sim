@@ -13,10 +13,10 @@ classifiers = [
 ]
 dependencies = [
     "numpy",
-    "hornlab-metal-bem @ git+https://github.com/m3gnus/hornlab-metal-bem.git",
 ]
 
 [project.optional-dependencies]
+metal = ["hornlab-metal-bem @ git+https://github.com/m3gnus/hornlab-metal-bem.git"]
 dev = ["pytest"]
 
 [tool.setuptools.packages.find]
