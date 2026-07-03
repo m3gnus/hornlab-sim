@@ -7,8 +7,8 @@ import pytest
 
 from hornlab_sim.methods.bandpass import Chamber, Driver, Port
 from hornlab_sim.methods.helmholtz import (
-    bigmeh_mid_chamber_helmholtz,
     helmholtz,
+    mid_chamber_helmholtz,
 )
 from hornlab_sim.methods.port_acoustics import (
     frustum_port_acoustic_mass,
@@ -16,15 +16,15 @@ from hornlab_sim.methods.port_acoustics import (
 )
 
 
-def test_ingard_interior_correction_matches_cafmeh_volume_shift_regression():
-    """CAFMEH clay-volume regression from the archived thread.
+def test_ingard_interior_correction_matches_measured_volume_shift_regression():
+    """Measured clay-volume regression from an archived build thread.
 
     The measurement gives 4x dummy chambers changing from 130 mL to 64 mL,
     with the notch moving from 577 Hz to 713 Hz (+23.6%). The same post does
     not state every dummy-port dimension, so this pins explicit assumptions:
-    one equivalent CAFMEH-style throat per chamber, 8.5 cm2 minimum throat
+    one equivalent conical throat per chamber, 8.5 cm2 minimum throat
     area, 10 mm effective wall depth, and a 21.2 cm2 chamber-side flare as
-    documented in design-insights §17a for the conical CAFMEH port family.
+    documented in the design notes (§17a) for the conical port family.
     The legacy volume-only sensitivity is independent of those dimensions.
     """
     geometry = dict(
@@ -34,20 +34,20 @@ def test_ingard_interior_correction_matches_cafmeh_volume_shift_regression():
         tube_depth_mm=10.0,
         target_fc_hz=600.0,
     )
-    large_legacy = bigmeh_mid_chamber_helmholtz(
+    large_legacy = mid_chamber_helmholtz(
         chamber_volume_cc=130.0,
         **geometry,
     )
-    small_legacy = bigmeh_mid_chamber_helmholtz(
+    small_legacy = mid_chamber_helmholtz(
         chamber_volume_cc=64.0,
         **geometry,
     )
-    large_ingard = bigmeh_mid_chamber_helmholtz(
+    large_ingard = mid_chamber_helmholtz(
         chamber_volume_cc=130.0,
         interior_end_correction="ingard",
         **geometry,
     )
-    small_ingard = bigmeh_mid_chamber_helmholtz(
+    small_ingard = mid_chamber_helmholtz(
         chamber_volume_cc=64.0,
         interior_end_correction="ingard",
         **geometry,
@@ -83,8 +83,8 @@ def test_frustum_helmholtz_frequency_rises_as_exit_flares():
         target_fc_hz=1000.0,
         port_model="frustum",
     )
-    straight = bigmeh_mid_chamber_helmholtz(exit_radius_m=0.010, **common)
-    flared = bigmeh_mid_chamber_helmholtz(exit_radius_m=0.020, **common)
+    straight = mid_chamber_helmholtz(exit_radius_m=0.010, **common)
+    flared = mid_chamber_helmholtz(exit_radius_m=0.020, **common)
 
     assert flared["f_Hz"] > straight["f_Hz"]
     assert flared["L_eff_m"] < straight["L_eff_m"]

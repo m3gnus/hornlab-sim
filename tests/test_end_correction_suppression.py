@@ -8,7 +8,7 @@ impedance).
 
 These tests verify that:
 
-1. The rule has a measurable effect — i.e., for a typical BIGMEH slot
+1. The rule has a measurable effect — i.e., for a typical slot-pocket
    geometry, suppressing the end correction changes the Helmholtz
    resonance by enough to matter (>1%). If the rule had no measurable
    effect, it wouldn't be worth enforcing.
@@ -33,7 +33,7 @@ import numpy as np
 import pytest
 
 from hornlab_sim.methods.bandpass import Port
-from hornlab_sim.methods.helmholtz import helmholtz, bigmeh_slot_helmholtz
+from hornlab_sim.methods.helmholtz import helmholtz, slot_helmholtz
 
 
 # ---------------------------------------------------------------------------
@@ -44,7 +44,7 @@ from hornlab_sim.methods.helmholtz import helmholtz, bigmeh_slot_helmholtz
 def test_end_corr_none_raises_helmholtz_frequency():
     """Removing the end correction raises f (smaller L_eff -> higher f)."""
     # 130 mm x 376 mm rectangular opening, 12 L cavity, 50 mm geom length.
-    # Numbers are physically representative of a BIGMEH-class slot port.
+    # Numbers are physically representative of a full-size slot port.
     V_m3 = 0.012
     A_m2 = 0.130 * 0.376
     L_geom_m = 0.050  # 50 mm of port tube so L_eff > 0 even with no end corr
@@ -114,12 +114,12 @@ def test_helmholtz_rejects_zero_l_eff():
 
 
 # ---------------------------------------------------------------------------
-# bigmeh_slot_helmholtz: same suppression semantics on the BIGMEH wrapper
+# slot_helmholtz: same suppression semantics on the slot-pocket wrapper
 # ---------------------------------------------------------------------------
 
 
-def test_bigmeh_slot_helmholtz_suppresses_end_corr_when_requested():
-    """bigmeh_slot_helmholtz with end_corr suppression gives a higher
+def test_slot_helmholtz_suppresses_end_corr_when_requested():
+    """slot_helmholtz with end_corr suppression gives a higher
     Helmholtz frequency when the interpretation has a non-zero geometric
     port length.
 
@@ -141,28 +141,28 @@ def test_bigmeh_slot_helmholtz_suppresses_end_corr_when_requested():
         interpretation="back_cavity_long_port",
     )
 
-    r_default = bigmeh_slot_helmholtz(end_corr="flanged_free", **kwargs)
-    r_none = bigmeh_slot_helmholtz(end_corr="none", **kwargs)
+    r_default = slot_helmholtz(end_corr="flanged_free", **kwargs)
+    r_none = slot_helmholtz(end_corr="none", **kwargs)
 
     f_default = float(r_default["f_Hz"])
     f_none = float(r_none["f_Hz"])
 
     assert f_none > f_default, (
-        f"bigmeh_slot_helmholtz with end_corr='none' should give a "
+        f"slot_helmholtz with end_corr='none' should give a "
         f"higher resonance frequency. Got f_none={f_none:.1f} <= "
         f"f_default={f_default:.1f}."
     )
 
 
-def test_bigmeh_slot_helmholtz_slot_pocket_interp_degenerates_with_no_end_corr():
+def test_slot_helmholtz_slot_pocket_interp_degenerates_with_no_end_corr():
     """In the canonical slot_pocket interpretation, end_corr='none' is
     degenerate (L_eff=0). That degeneracy IS the LEM->BEM signal: when
     BEM handles the slot radiation, there is no meaningful lumped
     Helmholtz frequency and the right LEM model is bp4_sealed_rear,
-    not bigmeh_slot_helmholtz.
+    not slot_helmholtz.
     """
     with pytest.raises(ValueError, match="L_eff must be positive"):
-        bigmeh_slot_helmholtz(
+        slot_helmholtz(
             opening_W_mm=130.0,
             slot_depth_mm=500.0,
             slot_height_mm=376.0,

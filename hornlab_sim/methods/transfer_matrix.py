@@ -250,7 +250,7 @@ def duct_input_impedance(
     return input_impedance(T, Z_load)
 
 
-# ── BIGMEH convenience functions ─────────────────────────────────────────
+# ── Slot-pocket convenience functions ────────────────────────────────────
 
 def slot_pocket_impedance(
     slot_opening_W_mm: float,
@@ -263,7 +263,7 @@ def slot_pocket_impedance(
     losses: bool = True,
     termination: str = "rigid",
 ) -> np.ndarray:
-    """TMM input impedance of one BIGMEH slot pocket.
+    """TMM input impedance of one slot pocket.
 
     The pocket is a tapered rectangular duct: constant height, width
     tapering linearly from ``slot_opening_W`` (mouth) to ``apex_width``
@@ -299,11 +299,12 @@ def slot_pocket_impedance(
 
 
 def slot_pocket_impedance_from_params(
-    params: "BigMEHParams",
+    params: "CabinetParams",
     freq: np.ndarray,
     **kwargs,
 ) -> np.ndarray:
-    """TMM slot pocket impedance from BigMEHParams."""
+    """TMM slot pocket impedance from a full cabinet params object
+    (duck-typed: needs ``params.slot``)."""
     slot = params.slot
     return slot_pocket_impedance(
         slot_opening_W_mm=slot.slot_opening_W,
@@ -355,7 +356,7 @@ def make_slot_tmm_load(
     n_segments: int = 30,
     losses: bool = True,
 ) -> TMMLoad:
-    """Build a TMMLoad for one BIGMEH slot pocket + optional exit port."""
+    """Build a TMMLoad for one slot pocket + optional exit port."""
     omega = 2.0 * math.pi * freq
     Z_pocket = slot_pocket_impedance(
         slot_opening_W_mm, slot_height_mm, apex_depth_mm, apex_width_mm,

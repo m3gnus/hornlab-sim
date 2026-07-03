@@ -212,9 +212,9 @@ class Port:
         if hydraulic_radius is None and self.perimeter is None and self.length > 0:
             equiv_radius = math.sqrt((self.area / self.n_parallel) / math.pi)
             # Area-only legacy Port geometry does not distinguish a round tube
-            # from a short MEH wall tap. Bound the loss length scale by the
+            # from a short wall tap. Bound the loss length scale by the
             # wall thickness so Q_port=None is conservative for 24-30 mm
-            # BIGMEH-style entry ports; callers with known geometry should
+            # wall-tap entry ports; callers with known geometry should
             # pass perimeter or hydraulic_radius explicitly.
             hydraulic_radius = min(equiv_radius, self.length / 8.0)
         return viscothermal_port_q(

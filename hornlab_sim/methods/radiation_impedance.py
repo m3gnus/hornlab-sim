@@ -255,8 +255,8 @@ def termination_load_from_solver_matrix(
     """Convert solver-convention aperture impedance into an engineering load.
 
     ``hornlab_sim.methods.radiation_impedance`` returns the complex conjugate
-    of the e^{+jwt} engineering-convention impedance. The 260611 BIGMEH
-    termination-attribution validation locked this against the exact
+    of the e^{+jwt} engineering-convention impedance. An archived
+    termination-attribution validation study locked this against the exact
     pulsating-sphere solution, so the LEM/TMM insertion convention is encoded
     here once as ``conj(Z_solver)``.
 

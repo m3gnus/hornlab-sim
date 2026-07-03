@@ -25,8 +25,8 @@ Acoustic engineering rules — these are load-bearing, see
    responsibility.
 
 2. **Aperture → list of physical group IDs (multi-tag).** Each aperture
-   name maps to a list of physical group IDs, not 1:1. BIGMEH meshes
-   typically produce more than one tag per slot (exit + walls). The
+   name maps to a list of physical group IDs, not 1:1. Parametric cabinet
+   meshes typically produce more than one tag per slot (exit + walls). The
    coupling layer applies ``v_n`` to every tag in the list.
 
 3. **Area mismatch is a warning, not an error.** Mesh-side total face area

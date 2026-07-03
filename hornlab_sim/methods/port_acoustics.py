@@ -2,11 +2,12 @@
 
 Single source of truth for the Rayleigh end-correction constants and the
 inverse port-length-for-Fb formula used by every lumped/parametric module
-in MEH-Lab. Importers:
+in this stack. Importers:
 
-    - ``lumped.bandpass`` (``Port.end_correction``)
-    - ``bigmeh_parametric.helmholtz`` (``end_correction``, slot/mid helpers)
-    - ``bigmeh_design.derive`` (``port_length_for_fb`` and split variant)
+    - ``hornlab_sim.methods.bandpass`` (``Port.end_correction``)
+    - ``hornlab_sim.methods.helmholtz`` (``end_correction``, slot/mid helpers)
+    - upstream cabinet-design derivation tooling (``port_length_for_fb``
+      and split variant)
 
 Rationale (Rayleigh):
     For a circular piston of radius r the radiated reactive air-mass adds
@@ -93,7 +94,7 @@ def end_correction(
         ``"flanged"``        — single flanged end, 0.85·r (one face baffled,
                                other into cavity)
         ``"free"``           — single unflanged end, 0.61·r
-        ``"baffled"``        — alias for ``"flanged"``; lets BIGMEH slot-exit
+        ``"baffled"``        — alias for ``"flanged"``; lets slot-exit
                                callers spell their physical intent.
         ``"flanged_both"``   — flanged at both ends, 1.7·r (tube between two
                                baffled openings or two cavities)
@@ -188,7 +189,7 @@ def confined_interior_end_correction(
         ΔL_i = k_i a / (1 - β a / R_v)
 
     where ``k_i`` is the local Rayleigh factor, ``β = 9/8`` is the
-    first-order confined-neck scale used by the BIGMEH research notes, and
+    first-order confined-neck scale used by the accompanying research notes, and
     the denominator is clamped so tiny chambers cannot produce a singular
     lumped correction. Large chambers approach Rayleigh-like behavior as
     ``a/R_v → 0``; the confinement scaling itself never switches off, so

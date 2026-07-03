@@ -2,9 +2,10 @@
 
 Provides:
     helmholtz(V, A, L_geom=0, end_corr="flanged_free", c=343) -> Hz
-    bigmeh_slot_helmholtz(opening_W_mm, slot_depth_mm, slot_height_mm,
-                          apex_width_mm=0, apex_depth_mm=slot_depth_mm,
-                          interpretation="slot_pocket", ...) -> dict
+    slot_helmholtz(opening_W_mm, slot_depth_mm, slot_height_mm,
+                   apex_width_mm=0, apex_depth_mm=slot_depth_mm,
+                   interpretation="slot_pocket", ...) -> dict
+    mid_chamber_helmholtz(...) -> dict
 
 Reference (omnicalculator):
     f = (c / 2π) · √( A / (V · L_eff) ),  L_eff = L_geom + ΔL
@@ -17,17 +18,29 @@ Where ΔL is the end-correction term. Standard Rayleigh values:
 A baffled hole (port with no neck) opening into open air on one side and a
 cavity on the other gets ΔL ≈ 0.85·r + 0.61·r = 1.46·r.
 
-For BIGMEH slot-loaded cabinets, the lumped Helmholtz model is a stretch
+For slot-loaded cabinets, the lumped Helmholtz model is a stretch
 because the slot is a tapered wedge, not a constant-section neck. The most
 useful interpretation is "slot_pocket": the wedge pocket is the cavity (V),
 the slot exit is a baffled opening (A), and L_eff = end correction only.
 This matches the ~250 Hz tune observed for a 130 mm × 376 mm × 500 mm-deep
 slot at 12.22 L pocket volume.
+
+The ``*_from_params`` variants take a duck-typed full-cabinet parameter
+object (annotated ``CabinetParams`` below): any object exposing ``.slot``,
+``.mids``, ``.cabinet_W/H/D`` and ``.slot_topology`` the way an upstream
+parametric cabinet model does.
+
+Provenance aliases: these helpers were extracted from a project-specific
+package and were first published as ``bigmeh_slot_helmholtz``,
+``bigmeh_slot_helmholtz_from_params``, ``bigmeh_mid_chamber_helmholtz``
+and ``bigmeh_mid_chamber_helmholtz_from_params``. Those names remain
+importable as thin deprecated aliases that emit ``DeprecationWarning``.
 """
 
 from __future__ import annotations
 
 import math
+import warnings
 from typing import Dict, Literal
 
 from .port_acoustics import (
@@ -72,8 +85,8 @@ def helmholtz(
         end_corr:   end-correction mode; see end_correction() docstring
         c:          speed of sound (m/s); default 343
         n_parallel: count of equal-area parallel openings sharing the
-                    cavity. Defaults to 1 (single port). Use n=2 for the
-                    BIGMEH split slot pair / Option C front-baffle ports.
+                    cavity. Defaults to 1 (single port). Use n=2 for a
+                    split slot pair / paired front-baffle ports.
         rho:        air density (kg/m³), accepted for API symmetry with
                     mass/compliance callers. The density cancels out of the
                     closed-form frequency when c is supplied.
@@ -141,7 +154,7 @@ def _uniform_port_terms(
     return L_eff / A_total_m2, entry_delta, exit_delta, L_eff
 
 
-def bigmeh_slot_helmholtz(
+def slot_helmholtz(
     opening_W_mm: float,
     slot_depth_mm: float = 500.0,
     slot_height_mm: float = 376.0,
@@ -158,17 +171,18 @@ def bigmeh_slot_helmholtz(
     rho: float = RHO_AIR,
     slot_topology: str = "front",
 ) -> Dict[str, float]:
-    """Compute a Helmholtz approximation for one BIGMEH slot.
+    """Compute a Helmholtz approximation for one slot-pocket (front cavity
+    + baffled hole).
 
     The lumped Helmholtz model is topology-independent: the pocket volume
     and exit area are the same for front-firing and side-firing slots
     (identical cross-section, just rotated). ``slot_topology`` is accepted
     for API completeness and echoed in the result dict.
 
-    The BIGMEH cabinet is bandpass-loaded (driver on inclined slot wall has
-    a sealed back chamber + slot-port front chamber), so a single Helmholtz
-    figure is always an approximation. Pick the interpretation that matches
-    the question:
+    A slot-loaded cabinet is bandpass-loaded (driver on inclined slot wall
+    has a sealed back chamber + slot-port front chamber), so a single
+    Helmholtz figure is always an approximation. Pick the interpretation
+    that matches the question:
 
     "slot_pocket" (default, matches user's expected ~250 Hz for 130 mm):
         V = slot pocket volume from its trapezoid cross-section
@@ -268,12 +282,13 @@ def bigmeh_slot_helmholtz(
     }
 
 
-def bigmeh_slot_helmholtz_from_params(
-    params: "BigMEHParams",
+def slot_helmholtz_from_params(
+    params: "CabinetParams",
     **kwargs,
 ) -> Dict[str, float]:
-    """Compute the BIGMEH slot Helmholtz approximation from BigMEHParams."""
-    return bigmeh_slot_helmholtz(
+    """Compute the slot-pocket Helmholtz approximation from a full cabinet
+    params object (duck-typed; see module docstring)."""
+    return slot_helmholtz(
         opening_W_mm=params.slot.slot_opening_W,
         slot_depth_mm=params.slot.slot_depth,
         slot_height_mm=params.slot.slot_height,
@@ -287,7 +302,7 @@ def bigmeh_slot_helmholtz_from_params(
     )
 
 
-def bigmeh_mid_chamber_helmholtz(
+def mid_chamber_helmholtz(
     mids: "MidSectionParams | None" = None,
     *,
     chamber_volume_cc: float | None = None,
@@ -308,11 +323,12 @@ def bigmeh_mid_chamber_helmholtz(
 ) -> Dict[str, object]:
     """Compute the closed-form Helmholtz estimate for one mid front chamber.
 
-    This is a first-pass sizing helper, not a final tuning oracle. BIGMEH
-    research-doc §2a / §2d cites CAFMEH #75 and Ingard 1953: the Rayleigh
-    closed form over-shoots the chamber-volume-to-frequency shift by ~1.75×,
-    so the BEM-resolved f_H usually sits roughly 10-15% lower than this
-    estimate. The mid-port geometry also follows Danley US6411718 col. 8-10:
+    This is a first-pass sizing helper, not a final tuning oracle. The
+    accompanying research notes (§2a / §2d) cite measurements from an
+    archived build thread and Ingard 1953: the Rayleigh closed form
+    over-shoots the chamber-volume-to-frequency shift by ~1.75×, so the
+    BEM-resolved f_H usually sits roughly 10-15% lower than this estimate.
+    The mid-port geometry also follows Danley US6411718 col. 8-10:
     use conical/frustum tap channels with a conical or near-conical horn body.
 
     ``interior_end_correction="ingard"`` is opt-in. It replaces the
@@ -321,7 +337,8 @@ def bigmeh_mid_chamber_helmholtz(
     (1953): the interior correction scales with the aperture radius relative
     to the chamber volume length scale, so it grows as small chambers confine
     the neck velocity field. This compresses the chamber-volume-to-frequency
-    sensitivity seen in the CAFMEH clay-volume regression.
+    sensitivity seen in the measured clay-volume regression from an archived
+    build thread.
 
     ``port_model="frustum"`` evaluates the port mass by
     ``integral dx/A(x)`` for a linear-radius taper:
@@ -494,25 +511,60 @@ def bigmeh_mid_chamber_helmholtz(
         "cylinder_depth_mm": cylinder_depth,
         "explicit_mid_geometry": explicit_mid,
         "formula_bias_note": (
-            "research-doc §2a/§2d: CAFMEH #75 / Ingard 1953 indicate "
+            "research notes §2a/§2d: archived build-thread measurements / "
+            "Ingard 1953 indicate "
             "the closed form over-shoots the V→f_H shift by ~1.75x; "
             "BEM/measurement should set final tuning"
         ),
     }
 
 
-def bigmeh_mid_chamber_helmholtz_from_params(
-    params: "BigMEHParams",
+def mid_chamber_helmholtz_from_params(
+    params: "CabinetParams",
     **kwargs,
 ) -> Dict[str, object]:
-    """Compute one BIGMEH mid-chamber Helmholtz estimate from BigMEHParams."""
-    return bigmeh_mid_chamber_helmholtz(params.mids, **kwargs)
+    """Compute one mid-chamber Helmholtz estimate from a full cabinet
+    params object (uses ``params.mids``; duck-typed, see module docstring)."""
+    return mid_chamber_helmholtz(params.mids, **kwargs)
+
+
+# ── Deprecated provenance aliases ─────────────────────────────────────────
+
+
+def _deprecated_alias(replacement, old_name: str):
+    """Wrap *replacement* under its historical project-prefixed name."""
+
+    def wrapper(*args, **kwargs):
+        warnings.warn(
+            f"{old_name}() is deprecated; use "
+            f"hornlab_sim.methods.helmholtz.{replacement.__name__}() instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return replacement(*args, **kwargs)
+
+    wrapper.__name__ = old_name
+    wrapper.__qualname__ = old_name
+    wrapper.__doc__ = (
+        f"Deprecated provenance alias for :func:`{replacement.__name__}`."
+    )
+    return wrapper
+
+
+bigmeh_slot_helmholtz = _deprecated_alias(
+    slot_helmholtz, "bigmeh_slot_helmholtz")
+bigmeh_slot_helmholtz_from_params = _deprecated_alias(
+    slot_helmholtz_from_params, "bigmeh_slot_helmholtz_from_params")
+bigmeh_mid_chamber_helmholtz = _deprecated_alias(
+    mid_chamber_helmholtz, "bigmeh_mid_chamber_helmholtz")
+bigmeh_mid_chamber_helmholtz_from_params = _deprecated_alias(
+    mid_chamber_helmholtz_from_params, "bigmeh_mid_chamber_helmholtz_from_params")
 
 
 def main() -> None:
     """CLI: print a comparison table for slot widths."""
     import argparse
-    p = argparse.ArgumentParser(prog="bigmeh_parametric.helmholtz")
+    p = argparse.ArgumentParser(prog="hornlab_sim.methods.helmholtz")
     p.add_argument("--mid", action="store_true",
                    help="Print the default mid-chamber estimate instead")
     p.add_argument("--openings", type=str, default="80,130,200",
@@ -528,7 +580,7 @@ def main() -> None:
     args = p.parse_args()
 
     if args.mid:
-        r = bigmeh_mid_chamber_helmholtz(end_corr=args.end_corr)
+        r = mid_chamber_helmholtz(end_corr=args.end_corr)
         print(f"{'target':>8} | {'V (cc)':>8} | {'A_one (cm²)':>11} | "
               f"{'ports':>5} | {'L_geom (mm)':>11} | {'L_eff (mm)':>10} | "
               f"{'f (Hz)':>7}")
@@ -548,7 +600,7 @@ def main() -> None:
     print("-" * 95)
     for w in openings:
         for interp in interps:
-            r = bigmeh_slot_helmholtz(
+            r = slot_helmholtz(
                 opening_W_mm=w,
                 slot_depth_mm=args.slot_depth,
                 slot_height_mm=args.slot_height,
