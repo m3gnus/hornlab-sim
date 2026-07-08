@@ -9,9 +9,19 @@ alongside the canonical Metal BEM pipeline.
 ## Modules
 
 - `hornlab_sim.methods.bandpass` — BP4/BP6S lumped enclosure simulation, validated within ~2 dB vs Hornresp
+- `hornlab_sim.hornresp` — Hornresp text config/response parsing, export, and validation helpers
 - `hornlab_sim.methods.transfer_matrix` — segmented TMM with Kirchhoff-Benade viscothermal losses (Beranek & Mellow 2012)
 - `hornlab_sim.methods.helmholtz` — cavity/aperture Helmholtz resonance helpers with configurable end correction
+- `hornlab_sim.methods.max_spl` — Xmax- and voltage-limited SPL helpers
+- `hornlab_sim.methods.bass_reflex` — WinISD-style bass-reflex seed and short-port screening core
 - `hornlab_sim.methods.lem_to_bem` — forward LEM → BEM coupling (LEM-computed aperture velocities drive a BEM Neumann boundary condition)
+
+## CLI
+
+```bash
+hornlab-tmm duct --width 130 --height 376 --depth 500 --termination rigid
+hornlab-validate-hornresp CONFIG.txt DATA.txt --out /tmp/hornresp-compare.png
+```
 
 ## Install
 

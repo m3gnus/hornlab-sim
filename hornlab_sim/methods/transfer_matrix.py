@@ -322,7 +322,7 @@ def slot_pocket_impedance_from_params(
 class TMMLoad:
     """A chamber-like load whose impedance comes from a precomputed TMM.
 
-    Duck-types ``Chamber.load_impedance(omega)`` so it plugs into
+    Duck-types ``Chamber.load_impedance(omega, rho=..., c=...)`` so it plugs into
     ``bandpass.simulate()`` without API changes.
 
     If a ``port`` is provided, the port admittance is added in parallel
@@ -333,7 +333,13 @@ class TMMLoad:
     _omega_ref: np.ndarray
     port: Optional[Port] = None
 
-    def load_impedance(self, omega: np.ndarray) -> np.ndarray:
+    def load_impedance(
+        self,
+        omega: np.ndarray,
+        *,
+        rho: float = RHO,
+        c: float = C_SOUND,
+    ) -> np.ndarray:
         if len(omega) != len(self._omega_ref):
             raise ValueError(
                 f"TMMLoad was built for {len(self._omega_ref)} frequency "
@@ -341,7 +347,7 @@ class TMMLoad:
             )
         Y = 1.0 / self._Z_tmm
         if self.port is not None:
-            Y = Y + 1.0 / self.port.impedance(omega)
+            Y = Y + 1.0 / self.port.impedance(omega, rho=rho, c=c)
         return 1.0 / Y
 
 

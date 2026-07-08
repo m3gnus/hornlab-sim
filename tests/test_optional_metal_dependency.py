@@ -9,12 +9,16 @@ import pytest
 INSTALL_HINT = 'pip install "hornlab-sim[metal]"'
 MODULES_TO_REIMPORT = (
     "hornlab_sim.methods.bandpass",
+    "hornlab_sim.methods.bass_reflex",
     "hornlab_sim.methods.helmholtz",
+    "hornlab_sim.methods.max_spl",
     "hornlab_sim.methods.transfer_matrix",
     "hornlab_sim.methods.port_acoustics",
     "hornlab_sim.methods.driver_coupling",
     "hornlab_sim.methods.lem_to_bem",
     "hornlab_sim.methods.radiation_impedance",
+    "hornlab_sim.hornresp",
+    "hornlab_sim.cli.tmm",
 )
 
 
@@ -42,7 +46,12 @@ def block_metal_import(monkeypatch):
 
 
 def test_pure_python_modules_import_without_metal(block_metal_import):
-    for module_name in MODULES_TO_REIMPORT[:5]:
+    for module_name in MODULES_TO_REIMPORT:
+        if module_name in {
+            "hornlab_sim.methods.lem_to_bem",
+            "hornlab_sim.methods.radiation_impedance",
+        }:
+            continue
         importlib.import_module(module_name)
 
 

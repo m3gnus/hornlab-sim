@@ -15,6 +15,10 @@ dependencies = [
     "numpy",
 ]
 
+[project.scripts]
+hornlab-tmm = "hornlab_sim.cli.tmm:main"
+hornlab-validate-hornresp = "hornlab_sim.hornresp.validate:main"
+
 [project.optional-dependencies]
 metal = ["hornlab-metal-bem @ git+https://github.com/m3gnus/hornlab-metal-bem.git"]
 dev = ["pytest"]

@@ -13,9 +13,12 @@ package limited to reusable physics methods.
 | Design question | Method | Module |
 |---|---|---|
 | Box tuning, Fb, Qtc, BP4/BP6S alignment | LEM bandpass | `hornlab_sim.methods.bandpass` (`bp4_sealed_rear`, `bp6s_dual_ported`) |
+| Hornresp text import/export or validation overlay | Hornresp interchange | `hornlab_sim.hornresp` |
 | Slot-pocket Helmholtz tuning (slot-pocket = front cavity + baffled hole) | LEM Helmholtz | `hornlab_sim.methods.helmholtz` (`slot_helmholtz`, `mid_chamber_helmholtz_from_params`) |
 | Mid-chamber resonance for a midport pocket | LEM Helmholtz | `hornlab_sim.methods.helmholtz` (`mid_chamber_helmholtz_from_params`) |
-| Axial duct impedance with viscothermal losses (segmented horn/duct) | TMM | `hornlab_sim.methods.transfer_matrix` (`duct_input_impedance`, `uniform_tube_matrix`, `make_slot_tmm_load`) |
+| Axial duct impedance with viscothermal losses (segmented horn/duct) | TMM | `hornlab_sim.methods.transfer_matrix` (`duct_input_impedance`, `uniform_tube_matrix`, `make_slot_tmm_load`) or `hornlab-tmm` |
+| Xmax/amp-voltage output ceiling | Max SPL | `hornlab_sim.methods.max_spl` |
+| Vented box seed and short-port feasibility screen | Bass-reflex screening | `hornlab_sim.methods.bass_reflex` |
 | Full 3D directivity from prescribed velocity sources (no LEM) | BEM | `hornlab_metal_bem` directly |
 | Full 3D directivity with realistic LEM/TMM-derived source velocities at apertures | Source-basis BEM coupling | `hornlab_sim.methods.lem_to_bem` for generic/custom meshes; consuming project adapters own observation frames, caching, and result schemas |
 | Reduced FEM/BEM-style aperture back-loading | BEM radiation impedance matrix | `hornlab_sim.methods.radiation_impedance` |
@@ -57,8 +60,9 @@ These defaults live in `hornlab_metal_bem.SolveConfig`. Don't override without e
 | Concept | Location |
 |---|---|
 | LEM/TMM/Helmholtz core math | `hornlab_sim.methods.*` (this package) |
+| Hornresp text interchange | `hornlab_sim.hornresp` |
 | Aperture radiation impedance matrices | `hornlab_sim.methods.radiation_impedance` |
-| Project geometry, params, adapters, and CLIs | consuming project |
+| Project geometry, params, driver presets, adapters, and project-flavored CLIs | consuming project |
 | BEM mesher | `hornlab-waveguide-mesher` |
 | BEM solver | `hornlab-metal-bem` |
 
