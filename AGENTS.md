@@ -22,6 +22,7 @@ package limited to reusable physics methods.
 | Full 3D directivity from prescribed velocity sources (no LEM) | BEM | `hornlab_metal_bem` directly |
 | Full 3D directivity with realistic LEM/TMM-derived source velocities at apertures | Source-basis BEM coupling | `hornlab_sim.methods.lem_to_bem` for generic/custom meshes; consuming project adapters own observation frames, caching, and result schemas |
 | Reduced FEM/BEM-style aperture back-loading | BEM radiation impedance matrix | `hornlab_sim.methods.radiation_impedance` |
+| Meshed 3D chamber modes and unequal multi-entry flow | Pressure FEM multiport matrix | `hornlab_sim.methods.acoustic_fem` (optional `fem` extra) |
 | Voltage-driven coupled cone+port velocities for a BEM-terminated cardioid branch | LEM driver/BEM termination coupling | `hornlab_sim.methods.driver_coupling` |
 
 ## Canonical interpretations (load-bearing — do not change without explicit user sign-off)
@@ -62,6 +63,7 @@ These defaults live in `hornlab_metal_bem.SolveConfig`. Don't override without e
 | LEM/TMM/Helmholtz core math | `hornlab_sim.methods.*` (this package) |
 | Hornresp text interchange | `hornlab_sim.hornresp` |
 | Aperture radiation impedance matrices | `hornlab_sim.methods.radiation_impedance` |
+| Reusable tetrahedral chamber FEM and reduced FEM-BEM condensation | `hornlab_sim.methods.acoustic_fem` |
 | Project geometry, params, driver presets, adapters, and project-flavored CLIs | consuming project |
 | BEM mesher | `hornlab-waveguide-mesher` |
 | BEM solver | `hornlab-metal-bem` |

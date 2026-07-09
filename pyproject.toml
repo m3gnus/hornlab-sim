@@ -21,6 +21,7 @@ hornlab-validate-hornresp = "hornlab_sim.hornresp.validate:main"
 
 [project.optional-dependencies]
 metal = ["hornlab-metal-bem @ git+https://github.com/m3gnus/hornlab-metal-bem.git"]
+fem = ["scipy", "meshio"]
 dev = ["pytest"]
 
 [tool.setuptools.packages.find]
