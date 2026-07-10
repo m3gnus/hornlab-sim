@@ -27,7 +27,8 @@ Acoustic engineering rules — these are load-bearing, see
 2. **Aperture → list of physical group IDs (multi-tag).** Each aperture
    name maps to a list of physical group IDs, not 1:1. Parametric cabinet
    meshes typically produce more than one tag per slot (exit + walls). The
-   coupling layer applies ``v_n`` to every tag in the list.
+   coupling layer applies ``v_n`` to every tag in the list. A physical group
+   may belong to only one aperture; overlapping tag lists are rejected.
 
 3. **Area mismatch is a warning, not an error.** Mesh-side total face area
    for an aperture may differ from the LEM-assumed throat area S by up to
@@ -111,7 +112,7 @@ def solve(
     ValueError
         Aperture name mismatch between ``lem_velocities`` and
         ``aperture_tags``, velocity array shape mismatch with frequencies,
-        or zero-area aperture.
+        overlapping physical tags, or zero-area aperture.
 
     Notes
     -----
@@ -139,6 +140,18 @@ def solve(
             f"Only in lem_velocities: {sorted(only_lem) or '[]'}. "
             f"Only in aperture_tags: {sorted(only_tags) or '[]'}."
         )
+
+    tag_owners: dict[int, str] = {}
+    for name, tags in aperture_tags.items():
+        for raw_tag in tags:
+            tag = int(raw_tag)
+            owner = tag_owners.get(tag)
+            if owner is not None and owner != name:
+                raise ValueError(
+                    f"Physical tag {tag} is assigned to multiple apertures: "
+                    f"{owner!r} and {name!r}"
+                )
+            tag_owners[tag] = name
 
     for name, U in lem_velocities.items():
         U_arr = np.asarray(U)
@@ -200,8 +213,6 @@ def solve(
             v_n = U_i / aperture_area_m2[name]
             log_entry[name] = v_n
             for tag in tags:
-                # If multiple apertures share a tag, last-wins. Document
-                # as a misuse case; we currently do not detect it.
                 sources[int(tag)] = v_n
 
         freq_config = replace(base_config, velocity_sources=sources)

@@ -157,6 +157,25 @@ def test_empty_frequencies_raises():
         )
 
 
+def test_overlapping_aperture_tags_raise_before_solve():
+    freqs = np.array([100.0])
+    velocities = {
+        "LF": np.ones(1, dtype=complex),
+        "MF": np.ones(1, dtype=complex),
+    }
+
+    with pytest.raises(
+        ValueError,
+        match=r"Physical tag 2 is assigned to multiple apertures: 'LF' and 'MF'",
+    ):
+        lem_to_bem.solve(
+            mesh="dummy.msh",
+            lem_velocities=velocities,
+            aperture_tags={"LF": [2], "MF": [2, 3]},
+            frequencies_hz=freqs,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Area-mismatch warning (does not raise)
 # ---------------------------------------------------------------------------
