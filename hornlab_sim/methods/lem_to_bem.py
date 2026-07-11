@@ -116,12 +116,12 @@ def solve(
 
     Notes
     -----
-    Implementation: this calls the solver once per frequency with mutated
-    ``config.velocity_sources``. That is correct but does not amortize the
-    BEM matrix factorization across velocity-source perturbations. A
-    future optimization would refactor the solver to share factorization
-    across multiple right-hand sides (the ABEC superposition trick); for
-    now the layer is correct but not asymptotically optimal.
+    On Metal versions with ``solve_multi_source``, the coupling layer solves
+    one unit-velocity basis per aperture over the full frequency array, then
+    combines those complex fields with ``U_a(f) / A_a``. This shares each
+    frequency's assembly and factorization across aperture right-hand sides.
+    Older Metal versions, and configs with callbacks whose observable behavior
+    must be preserved, use the original per-frequency solve loop.
     """
     # ----- Validate input shapes / names ----------------------------------
 
@@ -195,30 +195,81 @@ def solve(
                     stacklevel=2,
                 )
 
-    # ----- Per-frequency solve -------------------------------------------
+    # ----- Solve and combine ---------------------------------------------
 
     # The coupling layer always uses VELOCITY mode regardless of caller's
     # config, because LEM emits volume velocity directly.
     base_config = replace(config, velocity_mode=api.VelocityMode.VELOCITY)
 
+    aperture_names = list(aperture_tags)
+    aperture_indices = {
+        name: index for index, name in enumerate(aperture_names)
+    }
+    velocity_weights = np.column_stack(
+        [
+            np.asarray(lem_velocities[name], dtype=np.complex128)
+            / aperture_area_m2[name]
+            for name in aperture_names
+        ]
+    )
+    per_freq_log = [
+        {
+            "frequency_hz": float(frequency),
+            "v_n_per_aperture": {
+                name: complex(velocity_weights[index, aperture_index])
+                for aperture_index, name in enumerate(aperture_names)
+            },
+        }
+        for index, frequency in enumerate(freqs)
+    ]
+
+    solve_multi = getattr(api, "solve_multi_source", None)
+    callback_names = (
+        "on_frequency_result",
+        "progress_callback",
+        "velocity_source_callback",
+    )
+    has_callbacks = any(
+        getattr(base_config, name, None) is not None for name in callback_names
+    )
+    if solve_multi is not None and not has_callbacks:
+        all_tags = sorted(tag_owners)
+        basis_sources: list[dict[int, complex]] = []
+        for name in aperture_names:
+            sources = {tag: 0.0 + 0.0j for tag in all_tags}
+            for tag in aperture_tags[name]:
+                sources[int(tag)] = 1.0 + 0.0j
+            basis_sources.append(sources)
+
+        basis_results = solve_multi(loaded, freqs, basis_sources, base_config)
+        first_sources = {
+            tag: complex(velocity_weights[0, aperture_indices[owner]])
+            for tag, owner in tag_owners.items()
+        }
+        combined_config = replace(base_config, velocity_sources=first_sources)
+        aggregated = _combine_basis_results(
+            basis_results,
+            velocity_weights,
+            freqs,
+            combined_config=combined_config,
+        )
+        aggregated.solver_log.append({"lem_to_bem": per_freq_log})
+        return aggregated
+
     per_freq_results = []
-    per_freq_log = []
     for i, f in enumerate(freqs):
         # Build the per-frequency velocity_sources dict.
         # v_n[tag] = U_aperture(f) / A_aperture
         sources: dict[int, complex] = {}
-        log_entry: dict[str, complex] = {}
         for name, tags in aperture_tags.items():
             U_i = complex(lem_velocities[name][i])
             v_n = U_i / aperture_area_m2[name]
-            log_entry[name] = v_n
             for tag in tags:
                 sources[int(tag)] = v_n
 
         freq_config = replace(base_config, velocity_sources=sources)
         single = api.solve_frequencies(loaded, [float(f)], freq_config)
         per_freq_results.append(single)
-        per_freq_log.append({"frequency_hz": float(f), "v_n_per_aperture": log_entry})
 
     aggregated = _concat_results(per_freq_results, freqs)
     aggregated.solver_log.append({"lem_to_bem": per_freq_log})
@@ -298,6 +349,27 @@ def _concat_results(per_freq_results, frequencies_hz):
                 [r.surface_pressure_avg[tag] for r in per_freq_results], axis=0
             )
 
+    surface_pressure_complex = None
+    surface_fields = [
+        getattr(result, "surface_pressure_complex", None)
+        for result in per_freq_results
+    ]
+    if all(field is not None for field in surface_fields):
+        surface_pressure_complex = np.concatenate(surface_fields, axis=0)
+    elif any(field is not None for field in surface_fields):
+        raise ValueError("per-frequency surface-pressure fields differ")
+
+    native_diagnostics = [
+        entry
+        for result in per_freq_results
+        for entry in getattr(result, "native_diagnostics", [])
+    ]
+
+    optional_fields = {}
+    if hasattr(first, "surface_pressure_complex"):
+        optional_fields["surface_pressure_complex"] = surface_pressure_complex
+    if hasattr(first, "native_diagnostics"):
+        optional_fields["native_diagnostics"] = native_diagnostics
     return _replace(
         first,
         frequencies_hz=np.asarray(frequencies_hz, dtype=np.float64),
@@ -311,7 +383,162 @@ def _concat_results(per_freq_results, frequencies_hz):
                 r.timings.get("total_s", 0.0) for r in per_freq_results
             )
         },
+        **optional_fields,
     )
+
+
+def _combine_basis_results(
+    basis_results,
+    velocity_weights,
+    frequencies_hz,
+    *,
+    combined_config,
+):
+    """Linearly combine unit-aperture SolveResults at each frequency."""
+    from dataclasses import replace as _replace
+
+    if not basis_results:
+        raise ValueError("no aperture basis results to combine")
+    weights = np.asarray(velocity_weights, dtype=np.complex128)
+    frequencies = np.asarray(frequencies_hz, dtype=np.float64)
+    expected = (frequencies.size, len(basis_results))
+    if weights.shape != expected:
+        raise ValueError(
+            f"velocity_weights shape {weights.shape}, expected {expected}"
+        )
+
+    def weighted_result_field(name: str):
+        values = np.stack(
+            [np.asarray(getattr(result, name)) for result in basis_results],
+            axis=0,
+        )
+        if values.shape[1] != frequencies.size:
+            raise ValueError(
+                f"basis result {name} frequency count {values.shape[1]}, "
+                f"expected {frequencies.size}"
+            )
+        return np.einsum("fs,sf...->f...", weights, values)
+
+    pressure_complex = weighted_result_field("pressure_complex")
+    impedance = weighted_result_field("impedance")
+    first = basis_results[0]
+    angles = np.asarray(first.observation_angles_deg, dtype=np.float64)
+    on_axis_index = int(np.argmin(np.abs(angles)))
+    floor_amplitude = 20.0e-6 * 10.0 ** (-120.0 / 20.0)
+    amplitudes = np.maximum(np.abs(pressure_complex), floor_amplitude)
+    spl_raw = 20.0 * np.log10(amplitudes / 20.0e-6)
+    directivity_db = spl_raw - spl_raw[..., on_axis_index][..., None]
+
+    surface_pressure_avg = None
+    if first.surface_pressure_avg is not None:
+        tags = tuple(first.surface_pressure_avg)
+        for result in basis_results[1:]:
+            if result.surface_pressure_avg is None or set(
+                result.surface_pressure_avg
+            ) != set(tags):
+                raise ValueError("aperture basis surface-pressure tags differ")
+        surface_pressure_avg = {}
+        for tag in tags:
+            values = np.stack(
+                [
+                    np.asarray(result.surface_pressure_avg[tag])
+                    for result in basis_results
+                ],
+                axis=0,
+            )
+            surface_pressure_avg[tag] = np.einsum("fs,sf->f", weights, values)
+
+    surface_fields = [
+        getattr(result, "surface_pressure_complex", None)
+        for result in basis_results
+    ]
+    surface_pressure_complex = None
+    if all(field is not None for field in surface_fields):
+        values = np.stack(
+            [np.asarray(field) for field in surface_fields],
+            axis=0,
+        )
+        surface_pressure_complex = np.einsum(
+            "fs,sf...->f...", weights, values
+        )
+    elif any(field is not None for field in surface_fields):
+        raise ValueError("aperture basis surface-pressure fields differ")
+
+    solver_log = _combine_basis_solver_logs(
+        basis_results,
+        weights,
+        frequencies,
+    )
+    optional_fields = {}
+    if hasattr(first, "surface_pressure_complex"):
+        optional_fields["surface_pressure_complex"] = surface_pressure_complex
+    return _replace(
+        first,
+        frequencies_hz=np.array(frequencies, copy=True),
+        pressure_complex=np.asarray(pressure_complex, dtype=np.complex128),
+        directivity_db=np.asarray(directivity_db, dtype=np.float64),
+        impedance=np.asarray(impedance, dtype=np.complex128),
+        config=combined_config,
+        timings={
+            "lem_to_bem_total_s": sum(
+                result.timings.get("total_s", 0.0) for result in basis_results
+            )
+        },
+        solver_log=solver_log,
+        surface_pressure_avg=surface_pressure_avg,
+        **optional_fields,
+    )
+
+
+def _combine_basis_solver_logs(basis_results, weights, frequencies):
+    """Reconstruct one combined-source solver-log entry per frequency."""
+    frequency_count = len(frequencies)
+    basis_logs: list[list[dict]] = []
+    for result in basis_results:
+        logs = [
+            entry
+            for entry in result.solver_log
+            if isinstance(entry, dict) and "frequency_hz" in entry
+        ]
+        if len(logs) != frequency_count:
+            raise ValueError(
+                "aperture basis solver-log frequency count differs from result"
+            )
+        basis_logs.append(logs)
+
+    combined_logs: list[dict] = []
+    for frequency_index, frequency in enumerate(frequencies):
+        source_entries = [logs[frequency_index] for logs in basis_logs]
+        entry = dict(source_entries[0])
+        entry["frequency_hz"] = float(frequency)
+
+        if all(source.get("impedance") is not None for source in source_entries):
+            entry["impedance"] = sum(
+                weights[frequency_index, source_index] * source["impedance"]
+                for source_index, source in enumerate(source_entries)
+            )
+
+        sphere_fields = [
+            source.get("observation_sphere_pressure_complex")
+            for source in source_entries
+        ]
+        if all(field is not None for field in sphere_fields):
+            entry["observation_sphere_pressure_complex"] = sum(
+                weights[frequency_index, source_index] * np.asarray(field)
+                for source_index, field in enumerate(sphere_fields)
+            )
+        elif any(field is not None for field in sphere_fields):
+            raise ValueError("aperture basis sphere-pressure fields differ")
+
+        entry["timing_s"] = sum(
+            float(source.get("timing_s", 0.0)) for source in source_entries
+        )
+        if all("field_s" in source for source in source_entries):
+            entry["field_s"] = sum(
+                float(source["field_s"]) for source in source_entries
+            )
+        combined_logs.append(entry)
+    return combined_logs
 
 
 def _metal_api(config: Any | None = None):
@@ -343,10 +570,22 @@ def _metal_api(config: Any | None = None):
             return metal.native_config()
         return metal.native_config(formulation=formulation)
 
+    solve_multi_source = None
+    if hasattr(metal, "solve_multi_source"):
+
+        def solve_multi_source(mesh, freqs, sources, config):
+            return metal.solve_multi_source(
+                mesh,
+                sources,
+                config,
+                frequencies_hz=freqs,
+            )
+
     return SimpleNamespace(
         name="metal",
         load_mesh=metal.load_mesh,
         solve_frequencies=metal.solve_frequencies,
+        solve_multi_source=solve_multi_source,
         VelocityMode=VelocityMode,
         default_config=default_config,
     )

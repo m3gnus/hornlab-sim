@@ -16,14 +16,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Literal, Mapping, Sequence
 
 import numpy as np
 from numpy.typing import NDArray
 
 
 FEM_EXTRA_INSTALL_HINT = 'pip install "hornlab-sim[fem]"'
-RHO_AIR = 1.2
+RHO_AIR = 1.2041
 C_AIR = 343.0
 
 
@@ -286,6 +286,11 @@ def solve_multiport(
             raise RuntimeError(
                 f"acoustic FEM factorization failed at {frequency:g} Hz"
             ) from exc
+        if not np.all(np.isfinite(pressure)):
+            raise RuntimeError(
+                f"acoustic FEM solve produced non-finite pressure at "
+                f"{frequency:g} Hz"
+            )
         if pressure.ndim == 1:
             pressure = pressure[:, None]
         impedance[index] = np.asarray(projector.T @ pressure, dtype=np.complex128)
@@ -306,26 +311,42 @@ def couple_exterior_impedance(
     *,
     driver_boundary: str,
     entry_boundaries: Sequence[str],
+    exterior_convention: Literal["engineering", "solver"] = "engineering",
 ) -> FEMBEMCouplingResult:
     """Condense FEM entries against an exterior BEM radiation matrix.
 
     ``exterior_impedance[f, receiver, source]`` must use the same entry order
     as ``entry_boundaries`` and map outward entry volume velocity to interface
-    pressure in the engineering convention.  The returned ratios use positive
-    driver volume velocity *into* the chamber and positive entry flow out.
+    pressure. The default ``exterior_convention="engineering"`` preserves the
+    engineering ``exp(+j omega t)`` contract. Matrices returned by
+    :func:`hornlab_sim.methods.radiation_impedance.solve_aperture_matrix` use
+    the conjugated solver convention; pass ``exterior_convention="solver"``
+    to convert them here, or pre-convert with
+    :func:`hornlab_sim.methods.radiation_impedance.termination_load_from_solver_matrix`.
+    The returned ratios use positive driver volume velocity *into* the chamber
+    and positive entry flow out.
     """
     entries = tuple(str(name) for name in entry_boundaries)
+    driver = str(driver_boundary)
     if not entries:
         raise ValueError("at least one entry boundary is required")
     if len(set(entries)) != len(entries):
         raise ValueError("entry_boundaries must be unique")
+    if driver in entries:
+        raise ValueError("driver_boundary must not appear in entry_boundaries")
+    if exterior_convention not in ("engineering", "solver"):
+        raise ValueError(
+            "exterior_convention must be 'engineering' or 'solver'"
+        )
     names = interior.boundary_names
     try:
-        driver_index = names.index(str(driver_boundary))
+        driver_index = names.index(driver)
         entry_indices = [names.index(name) for name in entries]
     except ValueError as exc:
         raise ValueError("driver or entry boundary is absent from the FEM result") from exc
     exterior = np.asarray(exterior_impedance, dtype=np.complex128)
+    if exterior_convention == "solver":
+        exterior = np.conjugate(exterior)
     expected = (interior.frequencies_hz.size, len(entries), len(entries))
     if exterior.shape != expected:
         raise ValueError(
@@ -353,7 +374,7 @@ def couple_exterior_impedance(
         )
     return FEMBEMCouplingResult(
         frequencies_hz=np.array(interior.frequencies_hz, copy=True),
-        driver_boundary=str(driver_boundary),
+        driver_boundary=driver,
         entry_boundaries=entries,
         entry_to_driver_volume_velocity=ratios,
         driver_acoustic_load=driver_load,

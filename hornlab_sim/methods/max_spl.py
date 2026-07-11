@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from .bandpass import Driver, Port, bp4_sealed_rear, log_freq
+from .port_acoustics import SPEED_OF_SOUND, end_correction
 
 
 @dataclass
@@ -32,9 +33,10 @@ def design_front_chamber(
 ) -> tuple[Port, float]:
     """Size a BP4 front port/chamber from a Helmholtz target."""
     Sp = driver.Sd * port_ratio
-    a = math.sqrt(Sp / math.pi)
-    L_eff = Lp_phys + 2 * 0.85 * a
-    Vb = (343.0 ** 2 * Sp) / (4 * math.pi ** 2 * L_eff * fb_helmholtz ** 2)
+    L_eff = Lp_phys + end_correction(Sp, mode="flanged_both")
+    Vb = (SPEED_OF_SOUND ** 2 * Sp) / (
+        4 * math.pi ** 2 * L_eff * fb_helmholtz ** 2
+    )
     return Port(area=Sp, length=Lp_phys), Vb
 
 

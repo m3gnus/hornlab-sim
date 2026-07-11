@@ -31,6 +31,16 @@ package limited to reusable physics methods.
 - **Kirchhoff-Benade viscothermal losses** are built into `transfer_matrix.py`. Beranek & Mellow 2012 formulation. Don't replace with a different loss model without rerunning the Hornresp parity tests.
 - **Bandpass `Port(Q_port=None)` derives viscothermal Q from geometry** using the same Kirchhoff-Benade boundary-layer scaling. Pass an explicit numeric `Q_port` for fixed-Q legacy behavior.
 - **BP4/BP6S** are validated within ~2 dB vs Hornresp across the LF passband.
+- **Reduced FEM/BEM uses 1.2041 kg/m^3 on both sides.** `acoustic_fem` matches
+  the canonical Metal BEM density. The validated legacy LEM/TMM/Helmholtz
+  methods intentionally retain their pinned 1.21 kg/m^3 defaults.
+- **Reduced exterior matrices have an explicit convention seam.**
+  `radiation_impedance.solve_aperture_matrix` returns the conjugated Metal
+  solver convention. Before passing that matrix to
+  `acoustic_fem.couple_exterior_impedance`, either set
+  `exterior_convention="solver"` or convert it once with
+  `radiation_impedance.termination_load_from_solver_matrix`. The coupling
+  function's default remains engineering `exp(+j omega t)` for compatibility.
 
 ## LEM↔BEM coupling rules
 

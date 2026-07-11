@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from hornlab_sim.methods import acoustic_fem
+from hornlab_sim.methods import acoustic_fem, bandpass, helmholtz
 
 
 def _cube_mesh(length_m: float = 0.1) -> acoustic_fem.AcousticFEMMesh:
@@ -79,6 +79,12 @@ def test_low_frequency_cube_matches_lumped_compliance_and_reciprocity():
     assert system.boundary_areas_m2["ENTRY"] == pytest.approx(0.01)
 
 
+def test_fem_density_matches_bem_while_legacy_lem_density_stays_pinned():
+    assert acoustic_fem.RHO_AIR == 1.2041
+    assert bandpass.RHO == 1.21
+    assert helmholtz.RHO_AIR == 1.21
+
+
 def test_zero_exterior_load_transfers_driver_flow_to_open_entry():
     system = acoustic_fem.assemble_system(_cube_mesh(), ["DRIVER", "ENTRY"])
     result = acoustic_fem.solve_multiport(
@@ -98,6 +104,96 @@ def test_zero_exterior_load_transfers_driver_flow_to_open_entry():
     assert np.abs(coupled.driver_acoustic_load[0]) < 0.02 * abs(
         result.impedance_matrix[0, 0, 0]
     )
+
+
+def test_solver_convention_mass_load_converts_and_more_mass_tunes_lower():
+    frequencies = np.linspace(60.25, 260.25, 401)
+    omega = 2.0 * np.pi * frequencies
+    inverse_compliance = (2.0 * np.pi * 200.0) ** 2
+    cavity_impedance = 1j * inverse_compliance / omega
+    interior_matrix = cavity_impedance[:, None, None] * np.ones(
+        (frequencies.size, 2, 2), dtype=np.complex128
+    )
+    interior = acoustic_fem.AcousticFEMResult(
+        frequencies_hz=frequencies,
+        boundary_names=("DRIVER", "ENTRY"),
+        boundary_areas_m2={"DRIVER": 1.0, "ENTRY": 1.0},
+        impedance_matrix=interior_matrix,
+        volume_m3=1.0,
+        loss_factor=0.0,
+    )
+
+    light_engineering = (1j * omega)[:, None, None]
+    heavy_engineering = (4j * omega)[:, None, None]
+    light = acoustic_fem.couple_exterior_impedance(
+        interior,
+        light_engineering,
+        driver_boundary="DRIVER",
+        entry_boundaries=["ENTRY"],
+    )
+    heavy = acoustic_fem.couple_exterior_impedance(
+        interior,
+        np.conjugate(heavy_engineering),
+        driver_boundary="DRIVER",
+        entry_boundaries=["ENTRY"],
+        exterior_convention="solver",
+    )
+    heavy_engineering_direct = acoustic_fem.couple_exterior_impedance(
+        interior,
+        heavy_engineering,
+        driver_boundary="DRIVER",
+        entry_boundaries=["ENTRY"],
+    )
+
+    np.testing.assert_allclose(
+        heavy.entry_to_driver_volume_velocity,
+        heavy_engineering_direct.entry_to_driver_volume_velocity,
+    )
+    np.testing.assert_allclose(
+        heavy.driver_acoustic_load,
+        heavy_engineering_direct.driver_acoustic_load,
+    )
+    light_peak = frequencies[
+        np.argmax(np.abs(light.entry_to_driver_volume_velocity[:, 0]))
+    ]
+    heavy_peak = frequencies[
+        np.argmax(np.abs(heavy.entry_to_driver_volume_velocity[:, 0]))
+    ]
+    assert heavy_peak < light_peak
+
+
+def test_solve_multiport_rejects_non_finite_solver_output(monkeypatch):
+    system = acoustic_fem.assemble_system(_cube_mesh(), ["DRIVER", "ENTRY"])
+
+    class _NonFiniteSparseLinalg:
+        @staticmethod
+        def spsolve(matrix, rhs):
+            return np.full(rhs.shape, np.nan + 0.0j, dtype=np.complex128)
+
+    monkeypatch.setattr(
+        acoustic_fem,
+        "_scipy_sparse",
+        lambda: (None, _NonFiniteSparseLinalg),
+    )
+
+    with pytest.raises(RuntimeError, match="non-finite pressure at 100 Hz"):
+        acoustic_fem.solve_multiport(system, [100.0])
+
+
+def test_coupling_rejects_driver_listed_as_entry():
+    system = acoustic_fem.assemble_system(_cube_mesh(), ["DRIVER", "ENTRY"])
+    result = acoustic_fem.solve_multiport(system, [100.0])
+
+    with pytest.raises(
+        ValueError,
+        match="driver_boundary must not appear in entry_boundaries",
+    ):
+        acoustic_fem.couple_exterior_impedance(
+            result,
+            np.zeros((1, 1, 1), dtype=np.complex128),
+            driver_boundary="DRIVER",
+            entry_boundaries=["DRIVER"],
+        )
 
 
 def test_mesh_validation_rejects_missing_boundary_group():

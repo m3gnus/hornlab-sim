@@ -109,12 +109,18 @@ def area_discontinuity_matrix(
     area_out: float,
     freq: np.ndarray,
 ) -> np.ndarray:
-    """Transfer matrix for an abrupt area change (pressure continuous,
-    volume velocity scaled by area ratio)."""
+    """Return the ideal abrupt-junction matrix in the ``(p, U)`` domain.
+
+    Pressure ``p`` and volume velocity ``U`` are both continuous at an ideal
+    area step, so no transformer is inserted between adjacent tube matrices.
+    ``area_in`` and ``area_out`` are retained for API compatibility and to
+    make the junction geometry explicit. Higher-order evanescent step effects
+    are outside this plane-wave model.
+    """
     N = len(freq)
     T = np.zeros((N, 2, 2), dtype=complex)
     T[:, 0, 0] = 1.0
-    T[:, 1, 1] = area_in / area_out
+    T[:, 1, 1] = 1.0
     return T
 
 
@@ -193,8 +199,9 @@ def duct_input_impedance(
 
     The duct is defined by ``N`` segments, each with a cross-section area,
     wetted perimeter, and length.  The segments are cascaded from input
-    (index 0) to output (index N-1), with area-discontinuity matrices
-    inserted between adjacent segments of different area.
+    (index 0) to output (index N-1). No separate area-discontinuity matrix is
+    needed: pressure and volume velocity are continuous between adjacent
+    segments in this module's ``(p, U)`` state convention.
 
     Parameters
     ----------
@@ -340,14 +347,26 @@ class TMMLoad:
         rho: float = RHO,
         c: float = C_SOUND,
     ) -> np.ndarray:
-        if len(omega) != len(self._omega_ref):
+        omega_array = np.asarray(omega)
+        omega_ref = np.asarray(self._omega_ref)
+        if len(omega_array) != len(omega_ref):
             raise ValueError(
-                f"TMMLoad was built for {len(self._omega_ref)} frequency "
-                f"points but load_impedance received {len(omega)}"
+                f"TMMLoad was built for {len(omega_ref)} frequency "
+                f"points but load_impedance received {len(omega_array)}"
+            )
+        if omega_array.shape != omega_ref.shape or not np.allclose(
+            omega_array,
+            omega_ref,
+            rtol=1.0e-9,
+            atol=0.0,
+        ):
+            raise ValueError(
+                "TMMLoad frequency grid does not match the grid used to "
+                "build the load"
             )
         Y = 1.0 / self._Z_tmm
         if self.port is not None:
-            Y = Y + 1.0 / self.port.impedance(omega, rho=rho, c=c)
+            Y = Y + 1.0 / self.port.impedance(omega_array, rho=rho, c=c)
         return 1.0 / Y
 
 

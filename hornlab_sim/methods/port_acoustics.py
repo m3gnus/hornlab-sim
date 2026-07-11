@@ -42,6 +42,9 @@ FLANGED_END_CORRECTION_FACTOR: float = 0.85
 #: piston. ΔL_free = FREE_END_CORRECTION_FACTOR * r.
 FREE_END_CORRECTION_FACTOR: float = 0.61
 
+#: Sound speed used by the legacy lumped port-tuning formulae.
+SPEED_OF_SOUND: float = 343.0
+
 # Air thermo-viscous properties at roughly 20 C, 1 atm. These mirror the
 # Kirchhoff-Benade constants used in transfer_matrix.py.
 MU_AIR: float = 1.846e-5
@@ -358,7 +361,7 @@ def port_length_for_fb(
     area_m2: float,
     Vb_m3: float,
     fb_hz: float,
-    c_sound: float = 343.0,
+    c_sound: float = SPEED_OF_SOUND,
     flanged_each_end: bool = True,
 ) -> tuple[float, float]:
     """Solve the Helmholtz formula for the physical port length.
@@ -384,6 +387,7 @@ def port_length_for_fb(
 __all__ = [
     "FLANGED_END_CORRECTION_FACTOR",
     "FREE_END_CORRECTION_FACTOR",
+    "SPEED_OF_SOUND",
     "MU_AIR",
     "KAPPA_AIR",
     "CP_AIR",

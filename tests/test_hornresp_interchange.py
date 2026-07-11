@@ -47,6 +47,60 @@ def test_hornresp_bp4_export_parse_round_trip(tmp_path):
     assert rear_chamber.port is None
 
 
+def test_hornresp_series_wired_driver_group_is_rejected(tmp_path):
+    driver = Driver(
+        Sd=57e-4,
+        Bl=9.0,
+        Re=5.5,
+        Le=0.23e-3,
+        Mmd=5.7e-3,
+        Cms=351e-6,
+        Rms=1.0,
+        n_drivers=2,
+    )
+    out = tmp_path / "bp4-series.txt"
+    export_bp4(
+        driver,
+        Vb_front=36.32e-6,
+        front_port=Port(area=57e-4 / 8.0, length=15e-3),
+        Vb_rear=0.4e-3,
+        path=out,
+        wiring="S",
+    )
+    cfg = parse_config(out)
+
+    assert cfg.n_drivers == 2
+    assert cfg.wiring == "S"
+    with pytest.raises(ValueError, match="supports parallel wiring only"):
+        build_from_hornresp(cfg)
+
+
+def test_hornresp_parallel_driver_group_remains_supported(tmp_path):
+    driver = Driver(
+        Sd=57e-4,
+        Bl=9.0,
+        Re=5.5,
+        Le=0.23e-3,
+        Mmd=5.7e-3,
+        Cms=351e-6,
+        Rms=1.0,
+        n_drivers=2,
+    )
+    out = tmp_path / "bp4-parallel.txt"
+    export_bp4(
+        driver,
+        Vb_front=36.32e-6,
+        front_port=Port(area=57e-4 / 8.0, length=15e-3),
+        Vb_rear=0.4e-3,
+        path=out,
+        wiring="P",
+    )
+
+    parsed_driver, _front, _rear = build_from_hornresp(parse_config(out))
+
+    assert parsed_driver.n_drivers == 2
+
+
 def test_hornresp_response_parser_reads_three_columns(tmp_path):
     response = tmp_path / "response.txt"
     response.write_text(

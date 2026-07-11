@@ -17,6 +17,17 @@ from .io import parse_config, parse_response
 
 
 def build_from_hornresp(cfg) -> tuple[Driver, Chamber, Chamber]:
+    """Build the parallel-driver lumped model represented by ``cfg``.
+
+    Multi-driver Hornresp series wiring is rejected because
+    :class:`~hornlab_sim.methods.bandpass.Driver` models identical drivers in
+    parallel only.
+    """
+    if cfg.n_drivers > 1 and str(cfg.wiring).upper() == "S":
+        raise ValueError(
+            "Hornresp series-wired multi-driver configs are unsupported; "
+            "the lumped bandpass model supports parallel wiring only"
+        )
     driver = Driver(
         Sd=cfg.Sd,
         Bl=cfg.Bl,
@@ -25,7 +36,7 @@ def build_from_hornresp(cfg) -> tuple[Driver, Chamber, Chamber]:
         Mmd=cfg.Mmd,
         Cms=cfg.Cms,
         Rms=cfg.Rms,
-        n_drivers=cfg.n_drivers,    # honour Hornresp's "BP4 = NP/NS" flag
+        n_drivers=cfg.n_drivers,
     )
 
     # Hornresp horn-segment numbering: Vc1/Ap1/Lp1 = first chamber+port

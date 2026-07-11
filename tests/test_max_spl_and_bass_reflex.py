@@ -46,6 +46,70 @@ def test_xmax_limited_spl_returns_finite_ceiling():
     assert np.all(result.spl_max <= np.maximum(result.spl_xmax, result.spl_amp))
 
 
+@pytest.mark.parametrize(
+    ("sd", "fb", "port_ratio", "length", "expected_hex"),
+    [
+        (
+            57e-4,
+            1200.0,
+            1.0 / 8.0,
+            15e-3,
+            (
+                "0x1.758e219652bd4p-11",
+                "0x1.eb851eb851eb8p-7",
+                "0x1.30a5d721f4d60p-15",
+            ),
+        ),
+        (
+            850e-4,
+            45.0,
+            0.2,
+            0.1,
+            (
+                "0x1.16872b020c49cp-6",
+                "0x1.999999999999ap-4",
+                "0x1.c7542d04dea04p-4",
+            ),
+        ),
+        (
+            0.0123456789,
+            987.654321,
+            0.137,
+            0.023456789,
+            (
+                "0x1.bb611d57d4657p-10",
+                "0x1.8050e767f2716p-6",
+                "0x1.588c932e12354p-14",
+            ),
+        ),
+    ],
+)
+def test_design_front_chamber_remains_bit_identical(
+    sd,
+    fb,
+    port_ratio,
+    length,
+    expected_hex,
+):
+    driver = Driver(
+        Sd=sd,
+        Bl=1.0,
+        Re=1.0,
+        Mms=1.0,
+        Cms=1.0,
+        Rms=1.0,
+    )
+
+    port, volume = design_front_chamber(
+        driver,
+        fb_helmholtz=fb,
+        port_ratio=port_ratio,
+        Lp_phys=length,
+    )
+
+    assert (port.area.hex(), port.length.hex(), volume.hex()) == expected_hex
+
+
 def test_bass_reflex_short_port_metrics_accept_feasible_alignment():
     row = {
         "Brand": "Example",

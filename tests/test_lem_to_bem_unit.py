@@ -1,9 +1,9 @@
 """Unit tests for the LEM->BEM coupling layer.
 
-These tests do not require a real BEM solve — they exercise the input
-validation, aperture-area computation, and per-frequency dispatching with
-the solver mocked. A separate integration test (test_lem_to_bem_smoke.py)
-runs an actual BEM solve end-to-end.
+These tests do not require a real BEM solve — they exercise input validation,
+aperture-area computation, multi-source superposition, and fallback dispatch
+with the solver mocked. A separate integration test runs an actual BEM solve
+end-to-end when the native runtime is available.
 """
 
 from __future__ import annotations
@@ -44,6 +44,12 @@ class _FakeSolveResult:
     timings: dict[str, float] = field(default_factory=dict)
     solver_log: list[dict] = field(default_factory=list)
     surface_pressure_avg: dict[int, np.ndarray] | None = None
+    surface_pressure_complex: np.ndarray | None = None
+    observation_angles_deg: np.ndarray = field(
+        default_factory=lambda: np.linspace(-60.0, 60.0, 5)
+    )
+    config: object | None = None
+    native_diagnostics: list[dict] = field(default_factory=list)
 
     @property
     def spl_db(self):
@@ -294,6 +300,180 @@ def test_multi_tag_aperture_applies_same_vn_to_each_tag(monkeypatch):
     assert captured[0][3] == pytest.approx(2.0 + 0.0j)
 
 
+def test_multi_source_superposition_matches_per_frequency_loop(monkeypatch):
+    mesh = _fake_unit_square_mesh()
+    frequencies = np.array([100.0, 250.0, 700.0])
+    velocities = {
+        "left": np.array([0.5 + 0.2j, -0.3 + 0.4j, 0.7 - 0.1j]),
+        "right": np.array([-0.2 + 0.6j, 0.8 - 0.5j, 0.1 + 0.3j]),
+    }
+    aperture_tags = {"left": [2], "right": [3]}
+    multi_calls = []
+
+    def linear_result(freqs, sources, config):
+        freq_array = np.asarray(freqs, dtype=np.float64)
+        scale = freq_array / 100.0
+        source_2 = complex(sources.get(2, 0.0))
+        source_3 = complex(sources.get(3, 0.0))
+        profile_2 = np.array(
+            [
+                [1.0 + 0.1j, 1.5 + 0.2j, 2.0 + 0.3j, 1.4 + 0.4j, 0.8 + 0.5j],
+                [0.7 - 0.2j, 1.1 - 0.1j, 1.8 + 0.0j, 1.2 + 0.1j, 0.6 + 0.2j],
+            ]
+        )
+        profile_3 = np.array(
+            [
+                [0.4 - 0.3j, 0.8 - 0.2j, 1.2 - 0.1j, 1.0 + 0.0j, 0.5 + 0.1j],
+                [1.1 + 0.5j, 1.4 + 0.4j, 1.6 + 0.3j, 1.3 + 0.2j, 0.9 + 0.1j],
+            ]
+        )
+        pressure = scale[:, None, None] * (
+            source_2 * profile_2[None, ...]
+            + source_3 * profile_3[None, ...]
+        )
+        amplitudes = np.maximum(np.abs(pressure), 20.0e-6 * 1.0e-6)
+        spl = 20.0 * np.log10(amplitudes / 20.0e-6)
+        directivity = spl - spl[..., 2][..., None]
+        impedance = scale * (
+            source_2 * (2.0 + 3.0j) + source_3 * (-1.0 + 0.5j)
+        )
+        surface_avg = {
+            2: scale * (source_2 * (3.0 + 1.0j) + source_3 * (0.5 - 0.2j)),
+            3: scale * (source_2 * (-0.4 + 0.8j) + source_3 * (2.0 - 1.0j)),
+        }
+        surface_profile_2 = np.array([1.0, 2.0j, -1.0, 0.5 - 0.5j])
+        surface_profile_3 = np.array([0.2j, 1.5, 0.3 - 0.1j, -2.0j])
+        surface_pressure = scale[:, None] * (
+            source_2 * surface_profile_2[None, :]
+            + source_3 * surface_profile_3[None, :]
+        )
+        sphere_profile_2 = np.array([0.3 + 0.1j, 0.8 - 0.2j])
+        sphere_profile_3 = np.array([-0.4 + 0.5j, 0.2 + 0.6j])
+        sphere_pressure = scale[:, None] * (
+            source_2 * sphere_profile_2[None, :]
+            + source_3 * sphere_profile_3[None, :]
+        )
+        return _FakeSolveResult(
+            frequencies_hz=freq_array,
+            pressure_complex=pressure,
+            directivity_db=directivity,
+            impedance=impedance,
+            timings={"total_s": 0.25},
+            solver_log=[
+                {
+                    "frequency_hz": float(frequency),
+                    "sources": dict(sources),
+                    "timing_s": 0.1,
+                    "field_s": 0.04,
+                    "impedance": impedance[index],
+                    "observation_sphere_pressure_complex": sphere_pressure[index],
+                }
+                for index, frequency in enumerate(freq_array)
+            ],
+            surface_pressure_avg=surface_avg,
+            surface_pressure_complex=surface_pressure,
+            config=config,
+            native_diagnostics=[{"frequency_hz": float(f)} for f in freq_array],
+        )
+
+    def fail_sequential(*args, **kwargs):
+        raise AssertionError("optimized path must not call solve_frequencies")
+
+    optimized_api = _patch_metal_api(monkeypatch, fail_sequential)
+
+    def fake_solve_multi_source(loaded, freqs, source_dicts, config):
+        multi_calls.append(
+            (np.asarray(freqs, dtype=np.float64), [dict(s) for s in source_dicts])
+        )
+        return [linear_result(freqs, sources, config) for sources in source_dicts]
+
+    optimized_api.solve_multi_source = fake_solve_multi_source
+    optimized = lem_to_bem.solve(
+        mesh,
+        velocities,
+        aperture_tags,
+        frequencies,
+    )
+
+    sequential_calls = []
+
+    def fake_solve_frequencies(loaded, freqs, config):
+        sequential_calls.append((list(freqs), dict(config.velocity_sources)))
+        return linear_result(freqs, config.velocity_sources, config)
+
+    _patch_metal_api(monkeypatch, fake_solve_frequencies)
+    sequential = lem_to_bem.solve(
+        mesh,
+        velocities,
+        aperture_tags,
+        frequencies,
+    )
+
+    assert len(multi_calls) == 1
+    np.testing.assert_array_equal(multi_calls[0][0], frequencies)
+    assert multi_calls[0][1] == [
+        {2: 1.0 + 0.0j, 3: 0.0 + 0.0j},
+        {2: 0.0 + 0.0j, 3: 1.0 + 0.0j},
+    ]
+    assert len(sequential_calls) == len(frequencies)
+    np.testing.assert_allclose(
+        optimized.pressure_complex,
+        sequential.pressure_complex,
+        rtol=1.0e-13,
+        atol=1.0e-13,
+    )
+    np.testing.assert_allclose(
+        optimized.directivity_db,
+        sequential.directivity_db,
+        rtol=1.0e-13,
+        atol=1.0e-13,
+    )
+    np.testing.assert_allclose(
+        optimized.impedance,
+        sequential.impedance,
+        rtol=1.0e-13,
+        atol=1.0e-13,
+    )
+    for tag in (2, 3):
+        np.testing.assert_allclose(
+            optimized.surface_pressure_avg[tag],
+            sequential.surface_pressure_avg[tag],
+            rtol=1.0e-13,
+            atol=1.0e-13,
+        )
+    np.testing.assert_allclose(
+        optimized.surface_pressure_complex,
+        sequential.surface_pressure_complex,
+        rtol=1.0e-13,
+        atol=1.0e-13,
+    )
+    assert len(optimized.solver_log) == len(sequential.solver_log) == (
+        len(frequencies) + 1
+    )
+    for frequency_index in range(len(frequencies)):
+        assert optimized.solver_log[frequency_index]["impedance"] == pytest.approx(
+            sequential.solver_log[frequency_index]["impedance"],
+            rel=1.0e-13,
+            abs=1.0e-13,
+        )
+        np.testing.assert_allclose(
+            optimized.solver_log[frequency_index][
+                "observation_sphere_pressure_complex"
+            ],
+            sequential.solver_log[frequency_index][
+                "observation_sphere_pressure_complex"
+            ],
+            rtol=1.0e-13,
+            atol=1.0e-13,
+        )
+    assert optimized.native_diagnostics == sequential.native_diagnostics
+    assert optimized.config.velocity_sources == sequential.config.velocity_sources
+    np.testing.assert_array_equal(
+        optimized.observation_angles_deg,
+        sequential.observation_angles_deg,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Concatenation helper
 # ---------------------------------------------------------------------------
@@ -328,4 +508,6 @@ def _fake_solve_result(freqs):
         timings={},
         solver_log=[],
         surface_pressure_avg=None,
+        surface_pressure_complex=None,
+        config=_FakeConfig(),
     )
