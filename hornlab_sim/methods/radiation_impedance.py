@@ -24,10 +24,13 @@ from typing import TYPE_CHECKING, Any, Mapping, Union
 import numpy as np
 from numpy.typing import NDArray
 
-from .lem_to_bem import METAL_EXTRA_INSTALL_HINT, _aperture_face_areas
+from .lem_to_bem import (
+    METAL_EXTRA_INSTALL_HINT,
+    _aperture_face_areas,
+    _triangle_face_areas,
+)
 
 if TYPE_CHECKING:
-    from hornlab_metal_bem import SolveConfig, SolveResult
     from hornlab_metal_bem.mesh import LoadedMesh
 
 
@@ -598,12 +601,7 @@ def _validate_aperture_tags(aperture_tags: Mapping[str, list[int]]) -> list[str]
 
 
 def _tag_face_areas(loaded: "LoadedMesh", tags: list[int]) -> dict[int, float]:
-    vertices, elements = _mesh_vertices_elements(loaded)
-    p0 = vertices[elements[:, 0]]
-    p1 = vertices[elements[:, 1]]
-    p2 = vertices[elements[:, 2]]
-    tri_areas = 0.5 * np.linalg.norm(np.cross(p1 - p0, p2 - p0), axis=1)
-
+    tri_areas = _triangle_face_areas(loaded)
     physical_tags = np.asarray(loaded.physical_tags)
     result: dict[int, float] = {}
     for tag in tags:
@@ -615,18 +613,6 @@ def _tag_face_areas(loaded: "LoadedMesh", tags: list[int]) -> dict[int, float]:
             )
         result[int(tag)] = float(tri_areas[mask].sum())
     return result
-
-
-def _mesh_vertices_elements(
-    loaded: "LoadedMesh",
-) -> tuple[NDArray[np.float64], NDArray[np.int32]]:
-    vertices = np.asarray(loaded.grid.vertices)
-    if vertices.shape[0] == 3 and vertices.shape[1] != 3:
-        vertices = vertices.T
-    elements = np.asarray(loaded.grid.elements)
-    if elements.shape[0] == 3 and elements.shape[1] != 3:
-        elements = elements.T
-    return vertices, elements
 
 
 def _aggregate_aperture_pressure(

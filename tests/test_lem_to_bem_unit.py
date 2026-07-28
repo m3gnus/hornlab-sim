@@ -68,7 +68,7 @@ def _patch_metal_api(monkeypatch, solve_frequencies):
     return api
 
 
-def _fake_unit_square_mesh(extra_tags: dict[int, list[tuple[float, float, float]]] | None = None):
+def _fake_unit_square_mesh():
     """Build a fake LoadedMesh with two triangles forming a 1x1 unit square.
 
     Triangle 0: (0,0,0)-(1,0,0)-(0,1,0)  -> physical tag 2 -> 0.5 m^2

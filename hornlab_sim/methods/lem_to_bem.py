@@ -57,7 +57,6 @@ import numpy as np
 from numpy.typing import NDArray
 
 if TYPE_CHECKING:
-    from hornlab_metal_bem import SolveConfig, SolveResult
     from hornlab_metal_bem.mesh import LoadedMesh
 
 
@@ -286,22 +285,7 @@ def _aperture_face_areas(
     aperture_tags: Mapping[str, list[int]],
 ) -> dict[str, float]:
     """Return total face area in m^2 per aperture name."""
-    grid = loaded.grid
-
-    # Some mesh loaders expose vertices/elements transposed. Normalize to
-    # row-major arrays before computing triangle areas.
-    vertices = np.asarray(grid.vertices)
-    if vertices.shape[0] == 3 and vertices.shape[1] != 3:
-        vertices = vertices.T
-    elements = np.asarray(grid.elements)
-    if elements.shape[0] == 3 and elements.shape[1] != 3:
-        elements = elements.T
-
-    p0 = vertices[elements[:, 0]]
-    p1 = vertices[elements[:, 1]]
-    p2 = vertices[elements[:, 2]]
-    tri_areas = 0.5 * np.linalg.norm(np.cross(p1 - p0, p2 - p0), axis=1)
-
+    tri_areas = _triangle_face_areas(loaded)
     tags = loaded.physical_tags
 
     result: dict[str, float] = {}
@@ -323,10 +307,27 @@ def _aperture_face_areas(
     return result
 
 
+def _triangle_face_areas(loaded: "LoadedMesh") -> NDArray[np.float64]:
+    """Return the area of every triangular mesh face in m^2."""
+    grid = loaded.grid
+
+    # Some mesh loaders expose vertices/elements transposed. Normalize to
+    # row-major arrays before computing triangle areas.
+    vertices = np.asarray(grid.vertices)
+    if vertices.shape[0] == 3 and vertices.shape[1] != 3:
+        vertices = vertices.T
+    elements = np.asarray(grid.elements)
+    if elements.shape[0] == 3 and elements.shape[1] != 3:
+        elements = elements.T
+
+    p0 = vertices[elements[:, 0]]
+    p1 = vertices[elements[:, 1]]
+    p2 = vertices[elements[:, 2]]
+    return 0.5 * np.linalg.norm(np.cross(p1 - p0, p2 - p0), axis=1)
+
+
 def _concat_results(per_freq_results, frequencies_hz):
     """Concatenate single-frequency SolveResults along the frequency axis."""
-    from dataclasses import replace as _replace
-
     if not per_freq_results:
         raise ValueError("no per-frequency results to concatenate")
 
@@ -370,7 +371,7 @@ def _concat_results(per_freq_results, frequencies_hz):
         optional_fields["surface_pressure_complex"] = surface_pressure_complex
     if hasattr(first, "native_diagnostics"):
         optional_fields["native_diagnostics"] = native_diagnostics
-    return _replace(
+    return replace(
         first,
         frequencies_hz=np.asarray(frequencies_hz, dtype=np.float64),
         pressure_complex=pressure_complex,
@@ -395,8 +396,6 @@ def _combine_basis_results(
     combined_config,
 ):
     """Linearly combine unit-aperture SolveResults at each frequency."""
-    from dataclasses import replace as _replace
-
     if not basis_results:
         raise ValueError("no aperture basis results to combine")
     weights = np.asarray(velocity_weights, dtype=np.complex128)
@@ -472,7 +471,7 @@ def _combine_basis_results(
     optional_fields = {}
     if hasattr(first, "surface_pressure_complex"):
         optional_fields["surface_pressure_complex"] = surface_pressure_complex
-    return _replace(
+    return replace(
         first,
         frequencies_hz=np.array(frequencies, copy=True),
         pressure_complex=np.asarray(pressure_complex, dtype=np.complex128),
