@@ -233,12 +233,22 @@ def duct_input_impedance(
     if n == 0:
         raise ValueError("at least one segment required")
 
-    mats: list[np.ndarray] = []
-    for i in range(n):
-        mats.append(uniform_tube_matrix(lengths[i], areas[i], freq,
-                                        perimeter=perimeters[i], losses=losses))
-
-    T = cascade_matrices(mats)
+    T = uniform_tube_matrix(
+        lengths[0],
+        areas[0],
+        freq,
+        perimeter=perimeters[0],
+        losses=losses,
+    )
+    for i in range(1, n):
+        segment = uniform_tube_matrix(
+            lengths[i],
+            areas[i],
+            freq,
+            perimeter=perimeters[i],
+            losses=losses,
+        )
+        T = np.matmul(T, segment)
 
     if isinstance(termination, str):
         if termination == "rigid":
