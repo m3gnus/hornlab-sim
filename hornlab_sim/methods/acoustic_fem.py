@@ -356,11 +356,13 @@ def couple_exterior_impedance(
         raise ValueError("exterior_impedance contains non-finite values")
 
     entry_index = np.asarray(entry_indices)
-    reduced_interface = interior.impedance_matrix[
-        :, entry_index[:, None], entry_index
-    ]
+    # Coerce before the in-place subtract below: the per-frequency loop this
+    # replaced upcast on the fly, so a real-valued interior matrix used to be
+    # accepted. asarray is a no-op for the complex128 solve_multiport output.
+    interior_matrix = np.asarray(interior.impedance_matrix, dtype=np.complex128)
+    reduced_interface = interior_matrix[:, entry_index[:, None], entry_index]
     reduced_interface -= exterior
-    entry_drive = interior.impedance_matrix[:, entry_index, driver_index]
+    entry_drive = interior_matrix[:, entry_index, driver_index]
     try:
         ratios = np.linalg.solve(
             reduced_interface,
@@ -384,7 +386,7 @@ def couple_exterior_impedance(
         (
             -matrix[driver_index, driver_index]
             + matrix[driver_index, entry_index] @ ratio
-            for matrix, ratio in zip(interior.impedance_matrix, ratios)
+            for matrix, ratio in zip(interior_matrix, ratios)
         ),
         dtype=np.complex128,
         count=interior.frequencies_hz.size,
