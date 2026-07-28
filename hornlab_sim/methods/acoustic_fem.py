@@ -272,14 +272,14 @@ def solve_multiport(
     if not np.isfinite(loss) or loss < 0.0:
         raise ValueError("loss_factor must be non-negative and finite")
 
-    projector = system.boundary_average
+    projector = system.boundary_average.toarray()
     n_ports = len(system.boundary_names)
     impedance = np.empty((freqs.size, n_ports, n_ports), dtype=np.complex128)
     for index, frequency in enumerate(freqs):
         omega = 2.0 * np.pi * float(frequency)
         wavenumber = (omega / c_f) * (1.0 - 1j * loss)
         matrix = (system.stiffness - (wavenumber * wavenumber) * system.mass).tocsc()
-        rhs = (-1j * omega * rho_f) * projector.toarray()
+        rhs = (-1j * omega * rho_f) * projector
         try:
             pressure = sparse_linalg.spsolve(matrix, rhs)
         except RuntimeError as exc:
