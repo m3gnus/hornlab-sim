@@ -265,7 +265,7 @@ def frustum_port_inertance_denominator(
         # Preserve the local end type while applying the confined-cavity scale.
         base_mode = "flanged" if exit_delta_m >= FLANGED_END_CORRECTION_FACTOR * a_exit_m * 0.999 else "free"
         exit_delta_m = confined_interior_end_correction(
-            min(a_entry_m, a_exit_m),
+            a_exit_m,
             chamber_volume_m3,
             base_mode=base_mode,
         )

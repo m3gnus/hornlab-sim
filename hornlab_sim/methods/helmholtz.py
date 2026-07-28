@@ -392,6 +392,10 @@ def mid_chamber_helmholtz(
         else target_fc_hz
     )
     target_fc_hz = _require_finite_positive("target_fc_hz", target_fc_hz)
+    A_one = entry_area_cm2 * 1e-4
+    A = A_one * port_count
+    A_exit_one = chamber_area_cm2 * 1e-4
+    L_geom = tube_depth_mm * 1e-3
     if chamber_volume_cc is None and mids is not None:
         chamber_volume_cc = mids.chamber.resolved_volume_cc(
             mids.driver,
@@ -399,24 +403,37 @@ def mid_chamber_helmholtz(
             mids.target_fc_hz,
         )
     elif chamber_volume_cc is None:
-        A_default = entry_area_cm2 * 1e-4 * port_count
-        L_default = tube_depth_mm * 1e-3 + end_correction(
-            A_default,
-            end_corr,
-            n_parallel=port_count,
-        )
+        if port_model == "uniform":
+            L_default = L_geom + end_correction(
+                A,
+                end_corr,
+                n_parallel=port_count,
+            )
+            denom_default = L_default / A
+        elif port_model == "frustum":
+            # Ingard depends on the still-unknown chamber volume, so use the
+            # matching Rayleigh frustum as the closed-form sizing seed.
+            a_entry = math.sqrt(A_one / math.pi)
+            a_exit = math.sqrt(A_exit_one / math.pi)
+            denom_one, _, _ = frustum_port_inertance_denominator(
+                a_entry,
+                a_exit,
+                L_geom,
+                end_corr=end_corr,
+            )
+            denom_default = denom_one / port_count
+        else:
+            raise ValueError(f"unknown port_model {port_model!r}")
         omega_over_c = (2.0 * math.pi * target_fc_hz) / c
-        chamber_volume_cc = A_default / (L_default * omega_over_c ** 2) * 1e6
+        chamber_volume_cc = 1.0 / (
+            denom_default * omega_over_c ** 2
+        ) * 1e6
     else:
         chamber_volume_cc = _require_finite_positive(
             "chamber_volume_cc", chamber_volume_cc,
         )
 
-    A_one = entry_area_cm2 * 1e-4
-    A = A_one * port_count
-    A_exit_one = chamber_area_cm2 * 1e-4
     V = chamber_volume_cc * 1e-6
-    L_geom = tube_depth_mm * 1e-3
     entry_delta = 0.0
     exit_delta = 0.0
     if port_model == "uniform":

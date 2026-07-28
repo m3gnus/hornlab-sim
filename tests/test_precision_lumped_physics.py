@@ -11,7 +11,9 @@ from hornlab_sim.methods.helmholtz import (
     mid_chamber_helmholtz,
 )
 from hornlab_sim.methods.port_acoustics import (
+    confined_interior_end_correction,
     frustum_port_acoustic_mass,
+    frustum_port_inertance_denominator,
     viscothermal_port_q,
 )
 
@@ -88,6 +90,39 @@ def test_frustum_helmholtz_frequency_rises_as_exit_flares():
 
     assert flared["f_Hz"] > straight["f_Hz"]
     assert flared["L_eff_m"] < straight["L_eff_m"]
+
+
+def test_frustum_target_sizing_uses_tapered_port_inertance():
+    target_hz = 1000.0
+    result = mid_chamber_helmholtz(
+        port_count=1,
+        entry_radius_m=0.010,
+        exit_radius_m=0.020,
+        tube_depth_mm=20.0,
+        target_fc_hz=target_hz,
+        port_model="frustum",
+    )
+
+    assert result["f_Hz"] == pytest.approx(target_hz)
+
+
+def test_frustum_ingard_correction_uses_chamber_side_radius():
+    entry_radius = 0.010
+    exit_radius = 0.020
+    chamber_volume = 100.0e-6
+    _, _, interior_delta = frustum_port_inertance_denominator(
+        entry_radius,
+        exit_radius,
+        0.020,
+        interior_end_correction="ingard",
+        chamber_volume_m3=chamber_volume,
+    )
+
+    expected = confined_interior_end_correction(
+        exit_radius,
+        chamber_volume,
+    )
+    assert interior_delta == pytest.approx(expected)
 
 
 def test_geometry_derived_port_q_is_sane_and_monotonic():
