@@ -106,23 +106,60 @@ def test_frustum_target_sizing_uses_tapered_port_inertance():
     assert result["f_Hz"] == pytest.approx(target_hz)
 
 
-def test_frustum_ingard_correction_uses_chamber_side_radius():
-    entry_radius = 0.010
-    exit_radius = 0.020
-    chamber_volume = 100.0e-6
-    _, _, interior_delta = frustum_port_inertance_denominator(
-        entry_radius,
-        exit_radius,
-        0.020,
-        interior_end_correction="ingard",
-        chamber_volume_m3=chamber_volume,
-    )
+def test_frustum_ingard_correction_uses_the_narrow_frustum_radius():
+    """The confined-neck radius is the narrower end, either way round.
 
-    expected = confined_interior_end_correction(
-        exit_radius,
-        chamber_volume,
+    Keying the Ingard scaling to the chamber-side radius of a flared port
+    saturates the ``max_confinement`` clamp and makes the correction
+    volume-independent, which is what
+    ``test_frustum_ingard_keeps_the_measured_volume_shift_bracket`` guards.
+    """
+    chamber_volume = 100.0e-6
+    for entry_radius, exit_radius in ((0.010, 0.020), (0.020, 0.010)):
+        _, _, interior_delta = frustum_port_inertance_denominator(
+            entry_radius,
+            exit_radius,
+            0.020,
+            interior_end_correction="ingard",
+            chamber_volume_m3=chamber_volume,
+        )
+
+        expected = confined_interior_end_correction(
+            min(entry_radius, exit_radius),
+            chamber_volume,
+        )
+        assert interior_delta == pytest.approx(expected)
+
+
+def test_frustum_ingard_keeps_the_measured_volume_shift_bracket():
+    """The frustum arm of the measured CAFMEH bracket must stay a bracket.
+
+    ``260611-cafmeh-measured-calibration`` records Ingard uniform (+20.96%)
+    and Ingard frustum (+25.95%) straddling the measured +23.57% shift, with
+    legacy Rayleigh at +42.52%. If the confined-neck correction stops
+    responding to chamber volume, the frustum arm collapses back onto the
+    Rayleigh value and the bracket silently disappears.
+    """
+    geometry = dict(
+        port_count=1,
+        entry_area_cm2=8.5,
+        chamber_area_cm2=21.2,
+        tube_depth_mm=10.0,
+        target_fc_hz=600.0,
+        port_model="frustum",
+        interior_end_correction="ingard",
     )
-    assert interior_delta == pytest.approx(expected)
+    large = mid_chamber_helmholtz(chamber_volume_cc=130.0, **geometry)
+    small = mid_chamber_helmholtz(chamber_volume_cc=64.0, **geometry)
+
+    shift = small["f_Hz"] / large["f_Hz"] - 1.0
+    measured_shift = 713.0 / 577.0 - 1.0
+    rayleigh_shift = math.sqrt(130.0 / 64.0) - 1.0
+
+    assert small["interior_delta_L_m"] > large["interior_delta_L_m"]
+    assert shift == pytest.approx(0.2595, rel=5e-3)
+    assert shift > measured_shift
+    assert abs(shift - measured_shift) < 0.25 * abs(rayleigh_shift - measured_shift)
 
 
 def test_geometry_derived_port_q_is_sane_and_monotonic():
