@@ -62,16 +62,12 @@ def xmax_limited_spl(
         freq=freq,
         v_g=v_g_ref,
     )
-    x_peak = np.maximum(sim.cone_excursion_mm, 1e-12)
-
-    drive_scale_xmax = Xmax_mm / x_peak
+    drive_scale_xmax = Xmax_mm / np.maximum(sim.cone_excursion_mm, 1e-12)
     spl_xmax = sim.spl_total + 20 * np.log10(drive_scale_xmax)
 
     drive_scale_amp = Vamp_max / v_g_ref
     spl_amp = sim.spl_total + 20 * np.log10(drive_scale_amp)
 
-    drive_scale = np.minimum(drive_scale_xmax, drive_scale_amp)
-    spl_max = sim.spl_total + 20 * np.log10(drive_scale)
     limit_reason = np.where(drive_scale_xmax <= drive_scale_amp, "X", "V")
 
     return MaxSplResult(
@@ -79,7 +75,7 @@ def xmax_limited_spl(
         spl_at_drive=sim.spl_total,
         spl_xmax=spl_xmax,
         spl_amp=spl_amp,
-        spl_max=spl_max,
+        spl_max=np.minimum(spl_xmax, spl_amp),
         drive_v_xmax=v_g_ref * drive_scale_xmax,
         cone_excursion_mm_at_drive=sim.cone_excursion_mm,
         Xmax_mm=Xmax_mm,

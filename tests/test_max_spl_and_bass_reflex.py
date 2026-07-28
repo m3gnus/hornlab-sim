@@ -67,7 +67,10 @@ def test_xmax_limited_spl_returns_finite_ceiling():
     assert result.freq.shape == freq.shape
     assert np.all(np.isfinite(result.spl_max))
     assert set(np.unique(result.limit_reason)) <= {"X", "V"}
-    assert np.all(result.spl_max <= np.maximum(result.spl_xmax, result.spl_amp))
+    np.testing.assert_array_equal(
+        result.spl_max,
+        np.minimum(result.spl_xmax, result.spl_amp),
+    )
 
 
 @pytest.mark.parametrize(
