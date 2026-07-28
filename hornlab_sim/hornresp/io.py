@@ -79,7 +79,6 @@ def _parse_topology_flag(s: str) -> tuple[int, str]:
         BP4 = 4P     → 4 drivers, parallel
         ... and same for BP6S.
     """
-    import re
     s = s.strip().upper()
     if not s:
         return 0, ""
@@ -155,7 +154,12 @@ def parse_config(path: Path | str) -> HornrespConfig:
     Lp2_cm = f("Lp2") or 0.0
     Mmd_g = f("Mmd") or 0.0
     Le_mH = f("Le") or 0.0
-    Ang = _parse_value(raw.get("Ang", "")) or (2 * np.pi)
+    Ang = _parse_value(raw.get("Ang", ""))
+    if Ang is None:
+        Ang = 2 * np.pi
+    Eg = f("Eg")
+    if Eg is None:
+        Eg = 2.83
 
     bp6s_n, bp6s_w = _parse_topology_flag(raw.get("BP6S", ""))
     bp4_n, bp4_w = _parse_topology_flag(raw.get("BP4", ""))
@@ -183,7 +187,7 @@ def parse_config(path: Path | str) -> HornrespConfig:
         Vc2=Vc2_L * 1e-3,
         Ap2=Ap2_cm2 * 1e-4,
         Lp2=Lp2_cm * 1e-2,
-        Eg=f("Eg") or 2.83,
+        Eg=Eg,
         Rg=f("Rg") or 0.0,
         Ang_steradians=Ang,
         BP6S=is_bp6s,
@@ -210,5 +214,5 @@ def parse_response(path: Path | str) -> tuple[np.ndarray, np.ndarray, np.ndarray
                 rows.append((float(parts[0]), float(parts[1]), float(parts[2])))
             except ValueError:
                 continue
-    arr = np.array(rows)
+    arr = np.asarray(rows, dtype=float).reshape(-1, 3)
     return arr[:, 0], arr[:, 1], arr[:, 2]

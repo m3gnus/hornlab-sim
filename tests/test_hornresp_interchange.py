@@ -115,3 +115,27 @@ def test_hornresp_response_parser_reads_three_columns(tmp_path):
     assert np.allclose(freq, [20.0, 40.0])
     assert np.allclose(spl, [80.0, 86.0])
     assert np.allclose(phase, [0.0, -15.0])
+
+
+def test_hornresp_config_parser_preserves_zero_input_voltage(tmp_path):
+    config = tmp_path / "config.txt"
+    config.write_text(
+        "|RADIATION, SOURCE AND MOUTH PARAMETER VALUES:\n"
+        "Eg = 0.00\n",
+        encoding="utf-8",
+    )
+
+    cfg = parse_config(config)
+
+    assert cfg.Eg == 0.0
+
+
+def test_hornresp_response_parser_returns_empty_arrays_without_data(tmp_path):
+    response = tmp_path / "response.txt"
+    response.write_text("Freq\tSPL\tWPhase\n", encoding="utf-8")
+
+    freq, spl, phase = parse_response(response)
+
+    assert freq.shape == (0,)
+    assert spl.shape == (0,)
+    assert phase.shape == (0,)
