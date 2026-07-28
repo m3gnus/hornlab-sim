@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 from numpy.typing import NDArray
@@ -34,6 +34,14 @@ class CoupledDirectRadiatorResult:
     cone_excursion_m: NDArray[np.float64]
     mmd_correction_kg: float
     diagnostics: dict
+
+
+class _VoltageDrivenDriverResponse(NamedTuple):
+    cone_volume_velocity: NDArray[np.complex128]
+    electrical_input_impedance: NDArray[np.complex128]
+    cone_excursion_m: NDArray[np.float64]
+    mmd_correction_kg: float
+    diagnostics: dict[str, Any]
 
 
 def coupled_cardioid_response(
@@ -94,18 +102,6 @@ def coupled_cardioid_response(
         c=c_f,
     )
 
-    derived = driver.derive(rho=rho_f, c=c_f)
-    n = _positive_int("driver.n_drivers", derived.n_drivers)
-    sd = _positive_finite("driver.Sd", derived.Sd)
-    bl = _positive_finite("driver.Bl", derived.Bl)
-    cms = _positive_finite("driver.Cms", derived.Cms)
-    rms = _nonnegative_finite("driver.Rms", derived.Rms)
-    mmd_eff, mmd_correction, mmd_source = _effective_mmd(
-        driver,
-        derived,
-        rho_f,
-    )
-
     omega = 2.0 * np.pi * freqs
     s = 1j * omega
     compliance = volume / (rho_f * c_f * c_f)
@@ -115,67 +111,45 @@ def coupled_cardioid_response(
     chamber_load = rear * (rear - port_to_cone) / (s * compliance)
     acoustic_load = z_self + z_mf_port * port_to_cone + chamber_load
 
-    sd_eff = n * sd
-    mas_eff = mmd_eff / (n * sd ** 2)
-    cas_eff = n * cms * sd ** 2
-    ras_eff = rms / (n * sd ** 2)
-
-    d_eff = bandpass.Driver(
-        Sd=sd,
-        Bl=bl,
-        Re=derived.Re / n,
-        Le=derived.Le / n,
-        le2_h=(None if derived.le2_h is None else derived.le2_h / n),
-        re2_ohm=(None if derived.re2_ohm is None else derived.re2_ohm / n),
-        Mms=mmd_eff,
-        Cms=cms,
-        Rms=rms,
+    driver_response = _solve_voltage_driven_driver(
+        driver,
+        omega,
+        acoustic_load,
+        drive_voltage_v=drive_voltage,
+        rg_ohm=rg,
+        rho=rho_f,
+        c=c_f,
+        load_diagnostics={"chamber_compliance": compliance},
     )
-    z_e = d_eff.blocked_electrical_impedance(omega, Rg=rg)
-    z_e_blocked = d_eff.blocked_electrical_impedance(omega, Rg=0.0)
-    z_em = bl ** 2 / (sd_eff ** 2 * z_e)
-    z_drv = ras_eff + s * mas_eff + 1.0 / (s * cas_eff) + z_em
-    p_g = bl * drive_voltage / (sd_eff * z_e)
-    z_total = z_drv + acoustic_load
-    cone_velocity = p_g / z_total
-    port_velocity = port_to_cone * cone_velocity
-    electrical_input = z_e_blocked + bl ** 2 / (
-        sd_eff ** 2 * (z_total - z_em)
+    port_velocity = (
+        port_to_cone * driver_response.cone_volume_velocity
     )
-    cone_excursion = np.abs(cone_velocity) / (omega * sd_eff)
 
     diagnostics: dict[str, Any] = {
         "branch_input_impedance": branch.input_impedance,
         "branch_exit_to_input_volume_velocity_ratio": ratio,
-        "blocked_electrical_impedance_with_rg": z_e,
-        "blocked_electrical_impedance_ohm": z_e_blocked,
-        "electromechanical_impedance": z_em,
-        "driver_acoustic_impedance": z_drv,
-        "chamber_compliance": compliance,
-        "sd_eff_m2": sd_eff,
-        "mas_eff": mas_eff,
-        "cas_eff": cas_eff,
-        "ras_eff": ras_eff,
-        "mmd_eff_kg": mmd_eff,
-        "mmd_source": mmd_source,
-        "mmd_correction_fraction": (
-            0.0 if mmd_correction == 0.0 else mmd_correction / derived.Mms
-        ),
+        **driver_response.diagnostics,
         "rear_sign": rear,
     }
 
     return CoupledCardioidResult(
         frequencies_hz=np.array(freqs, dtype=np.float64, copy=True),
-        cone_volume_velocity=np.asarray(cone_velocity, dtype=np.complex128),
+        cone_volume_velocity=np.asarray(
+            driver_response.cone_volume_velocity,
+            dtype=np.complex128,
+        ),
         port_volume_velocity=np.asarray(port_velocity, dtype=np.complex128),
         port_to_cone_ratio=np.asarray(port_to_cone, dtype=np.complex128),
         acoustic_load=np.asarray(acoustic_load, dtype=np.complex128),
         electrical_input_impedance=np.asarray(
-            electrical_input,
+            driver_response.electrical_input_impedance,
             dtype=np.complex128,
         ),
-        cone_excursion_m=np.asarray(cone_excursion, dtype=np.float64),
-        mmd_correction_kg=float(mmd_correction),
+        cone_excursion_m=np.asarray(
+            driver_response.cone_excursion_m,
+            dtype=np.float64,
+        ),
+        mmd_correction_kg=float(driver_response.mmd_correction_kg),
         diagnostics=diagnostics,
     )
 
@@ -217,7 +191,50 @@ def coupled_direct_radiator_response(
         rear_compliance = rear_volume / (rho_f * c_f * c_f)
         acoustic_load = acoustic_load + 1.0 / (s * rear_compliance)
 
-    derived = driver.derive(rho=rho_f, c=c_f)
+    driver_response = _solve_voltage_driven_driver(
+        driver,
+        omega,
+        acoustic_load,
+        drive_voltage_v=drive_voltage,
+        rg_ohm=rg,
+        rho=rho_f,
+        c=c_f,
+        load_diagnostics={"rear_chamber_compliance": rear_compliance},
+    )
+
+    return CoupledDirectRadiatorResult(
+        frequencies_hz=np.array(freqs, dtype=np.float64, copy=True),
+        cone_volume_velocity=np.asarray(
+            driver_response.cone_volume_velocity,
+            dtype=np.complex128,
+        ),
+        acoustic_load=np.asarray(acoustic_load, dtype=np.complex128),
+        electrical_input_impedance=np.asarray(
+            driver_response.electrical_input_impedance,
+            dtype=np.complex128,
+        ),
+        cone_excursion_m=np.asarray(
+            driver_response.cone_excursion_m,
+            dtype=np.float64,
+        ),
+        mmd_correction_kg=float(driver_response.mmd_correction_kg),
+        diagnostics=driver_response.diagnostics,
+    )
+
+
+def _solve_voltage_driven_driver(
+    driver: bandpass.Driver,
+    omega: NDArray[np.float64],
+    acoustic_load: NDArray[np.complex128],
+    *,
+    drive_voltage_v: float,
+    rg_ohm: float,
+    rho: float,
+    c: float,
+    load_diagnostics: dict[str, Any],
+) -> _VoltageDrivenDriverResponse:
+    """Reduce parallel drivers and solve them against an acoustic load."""
+    derived = driver.derive(rho=rho, c=c)
     n = _positive_int("driver.n_drivers", derived.n_drivers)
     sd = _positive_finite("driver.Sd", derived.Sd)
     bl = _positive_finite("driver.Bl", derived.Bl)
@@ -226,9 +243,10 @@ def coupled_direct_radiator_response(
     mmd_eff, mmd_correction, mmd_source = _effective_mmd(
         driver,
         derived,
-        rho_f,
+        rho,
     )
 
+    s = 1j * omega
     sd_eff = n * sd
     mas_eff = mmd_eff / (n * sd ** 2)
     cas_eff = n * cms * sd ** 2
@@ -245,11 +263,11 @@ def coupled_direct_radiator_response(
         Cms=cms,
         Rms=rms,
     )
-    z_e = d_eff.blocked_electrical_impedance(omega, Rg=rg)
+    z_e = d_eff.blocked_electrical_impedance(omega, Rg=rg_ohm)
     z_e_blocked = d_eff.blocked_electrical_impedance(omega, Rg=0.0)
     z_em = bl ** 2 / (sd_eff ** 2 * z_e)
     z_drv = ras_eff + s * mas_eff + 1.0 / (s * cas_eff) + z_em
-    p_g = bl * drive_voltage / (sd_eff * z_e)
+    p_g = bl * drive_voltage_v / (sd_eff * z_e)
     z_total = z_drv + acoustic_load
     cone_velocity = p_g / z_total
     electrical_input = z_e_blocked + bl ** 2 / (
@@ -262,7 +280,7 @@ def coupled_direct_radiator_response(
         "blocked_electrical_impedance_ohm": z_e_blocked,
         "electromechanical_impedance": z_em,
         "driver_acoustic_impedance": z_drv,
-        "rear_chamber_compliance": rear_compliance,
+        **load_diagnostics,
         "sd_eff_m2": sd_eff,
         "mas_eff": mas_eff,
         "cas_eff": cas_eff,
@@ -273,18 +291,12 @@ def coupled_direct_radiator_response(
             0.0 if mmd_correction == 0.0 else mmd_correction / derived.Mms
         ),
     }
-
-    return CoupledDirectRadiatorResult(
-        frequencies_hz=np.array(freqs, dtype=np.float64, copy=True),
-        cone_volume_velocity=np.asarray(cone_velocity, dtype=np.complex128),
-        acoustic_load=np.asarray(acoustic_load, dtype=np.complex128),
-        electrical_input_impedance=np.asarray(
-            electrical_input,
-            dtype=np.complex128,
-        ),
-        cone_excursion_m=np.asarray(cone_excursion, dtype=np.float64),
-        mmd_correction_kg=float(mmd_correction),
-        diagnostics=diagnostics,
+    return _VoltageDrivenDriverResponse(
+        cone_velocity,
+        electrical_input,
+        cone_excursion,
+        mmd_correction,
+        diagnostics,
     )
 
 
