@@ -491,8 +491,8 @@ def matrix_diagnostics(
 
     passivity_min_eig = np.zeros(result.frequencies_hz.size, dtype=np.float64)
     for idx, z in enumerate(matrix):
-        real_symmetric = 0.5 * (np.real(z) + np.real(z).T)
-        passivity_min_eig[idx] = float(np.min(np.linalg.eigvalsh(real_symmetric)))
+        hermitian_part = 0.5 * (z + z.conj().T)
+        passivity_min_eig[idx] = float(np.min(np.linalg.eigvalsh(hermitian_part)))
     passivity_ok = passivity_min_eig >= -float(passivity_tol)
 
     low_ka_self_impedance: dict[str, NDArray[np.complex128]] = {}
@@ -508,12 +508,14 @@ def matrix_diagnostics(
                 rho=rho,
                 c=c,
             )
-            actual = matrix[:, name_to_index[name], name_to_index[name]]
+            actual_engineering = np.conjugate(
+                matrix[:, name_to_index[name], name_to_index[name]]
+            )
             ka = (2.0 * math.pi * result.frequencies_hz / float(c)) * float(radius)
             rel = np.full(result.frequencies_hz.size, np.nan, dtype=np.float64)
             mask = ka <= float(low_ka_max)
             rel[mask] = (
-                np.abs(actual[mask] - expected[mask])
+                np.abs(actual_engineering[mask] - expected[mask])
                 / np.maximum(np.abs(expected[mask]), np.finfo(np.float64).tiny)
             )
             low_ka_self_impedance[name] = expected

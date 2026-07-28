@@ -341,6 +341,24 @@ def test_matrix_diagnostics_reports_reciprocity_and_passivity():
     assert not diagnostics.passivity_ok[1]
 
 
+def test_matrix_diagnostics_passivity_uses_full_hermitian_part():
+    result = radiation_impedance.RadiationImpedanceResult(
+        frequencies_hz=np.array([100.0]),
+        aperture_names=["a", "b"],
+        aperture_area_m2={"a": 1.0, "b": 1.0},
+        impedance_matrix=np.array(
+            [[[1.0, 2.0j], [-2.0j, 1.0]]],
+            dtype=np.complex128,
+        ),
+        solver_logs=[],
+    )
+
+    diagnostics = radiation_impedance.matrix_diagnostics(result)
+
+    assert diagnostics.passivity_min_eig[0] == pytest.approx(-1.0)
+    assert not diagnostics.passivity_ok[0]
+
+
 def test_low_ka_baffled_piston_reference_scaling():
     radius_m = 0.05
     freqs = np.array([50.0, 100.0])
@@ -354,7 +372,7 @@ def test_low_ka_baffled_piston_reference_scaling():
     assert z[1].imag / z[0].imag == pytest.approx(2.0)
 
 
-def test_matrix_diagnostics_low_ka_self_impedance_matches_reference():
+def test_matrix_diagnostics_low_ka_converts_solver_convention():
     radius_m = 0.04
     freqs = np.array([80.0, 160.0])
     expected = radiation_impedance.low_ka_baffled_piston_radiation_impedance(
@@ -365,7 +383,7 @@ def test_matrix_diagnostics_low_ka_self_impedance_matches_reference():
         frequencies_hz=freqs,
         aperture_names=["piston"],
         aperture_area_m2={"piston": np.pi * radius_m * radius_m},
-        impedance_matrix=expected.reshape(2, 1, 1),
+        impedance_matrix=np.conjugate(expected).reshape(2, 1, 1),
         solver_logs=[],
     )
 
