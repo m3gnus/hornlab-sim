@@ -5,7 +5,7 @@ import math
 import numpy as np
 import pytest
 
-from hornlab_sim.methods.bandpass import Chamber, Driver, Port
+from hornlab_sim.methods.bandpass import Chamber, Driver, Port, simulate
 from hornlab_sim.methods.helmholtz import (
     helmholtz,
     mid_chamber_helmholtz,
@@ -170,6 +170,37 @@ def test_chamber_thermal_compliance_correction_is_opt_in_and_clamped():
     assert thermal.Cab == pytest.approx(adiabatic.Cab)
     assert thermal.Cab_for(omega)[0] > adiabatic.Cab
     assert thermal.Cab_for(cold_omega)[0] == pytest.approx(1.4 * adiabatic.Cab)
+
+
+def test_bandpass_sweep_computes_each_port_impedance_once(monkeypatch):
+    driver = Driver(
+        Sd=57e-4,
+        Bl=9.0,
+        Re=5.5,
+        Le=0.23e-3,
+        Mmd=5.7e-3,
+        Cms=351e-6,
+        Rms=1.0,
+    )
+    front_port = Port(area=7.1e-4, length=0.024)
+    rear_port = Port(area=4.0e-4, length=0.080)
+    calls = {id(front_port): 0, id(rear_port): 0}
+    original_impedance = Port.impedance
+
+    def counted_impedance(self, omega, **kwargs):
+        calls[id(self)] += 1
+        return original_impedance(self, omega, **kwargs)
+
+    monkeypatch.setattr(Port, "impedance", counted_impedance)
+
+    simulate(
+        driver,
+        Chamber(volume=0.7e-3, port=front_port),
+        Chamber(volume=1.2e-3, port=rear_port),
+        np.logspace(np.log10(20.0), np.log10(2000.0), 64),
+    )
+
+    assert calls == {id(front_port): 1, id(rear_port): 1}
 
 
 def test_lr2_blocked_electrical_impedance_matches_hand_calculation():

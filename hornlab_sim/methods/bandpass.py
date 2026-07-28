@@ -314,13 +314,43 @@ class Chamber:
         rho: float = RHO,
         c: float = C_SOUND,
     ) -> np.ndarray:
+        return self._load_and_port_impedance(omega, rho=rho, c=c)[0]
+
+    def _load_and_port_impedance(
+        self,
+        omega: np.ndarray,
+        *,
+        rho: float = RHO,
+        c: float = C_SOUND,
+    ) -> tuple[np.ndarray, Optional[np.ndarray]]:
         s = 1j * omega
         Y = s * self.Cab_for(omega, rho=rho, c=c)
         if self.fill_loss > 0:
             Y = Y + 1.0 / self.fill_loss
+        Z_port = None
         if self.port is not None:
-            Y = Y + 1.0 / self.port.impedance(omega, rho=rho, c=c)
-        return 1.0 / Y
+            Z_port = self.port.impedance(omega, rho=rho, c=c)
+            Y = Y + 1.0 / Z_port
+        return 1.0 / Y, Z_port
+
+
+def _chamber_impedances(
+    chamber: Chamber,
+    omega: np.ndarray,
+    *,
+    rho: float,
+    c: float,
+) -> tuple[np.ndarray, Optional[np.ndarray]]:
+    paired_load = getattr(chamber, "_load_and_port_impedance", None)
+    if paired_load is not None:
+        return paired_load(omega, rho=rho, c=c)
+    Z_load = chamber.load_impedance(omega, rho=rho, c=c)
+    Z_port = (
+        chamber.port.impedance(omega, rho=rho, c=c)
+        if chamber.port is not None
+        else None
+    )
+    return Z_load, Z_port
 
 
 # ---------------------------------------------------------------------------
@@ -420,19 +450,24 @@ def simulate(
     Z_drv = Ras_eff + s * Mas_eff + 1.0 / (s * Cas_eff) + Z_em
     p_g = (Bl * v_g) / (Sd_eff * Z_e)
 
-    Z_load_f = front_chamber.load_impedance(omega, rho=rho, c=c)
-    Z_load_r = rear_chamber.load_impedance(omega, rho=rho, c=c)
+    Z_load_f, Z_port_f = _chamber_impedances(
+        front_chamber, omega, rho=rho, c=c,
+    )
+    Z_load_r, Z_port_r = _chamber_impedances(
+        rear_chamber, omega, rho=rho, c=c,
+    )
 
     Ud = p_g / (Z_drv + Z_load_f + Z_load_r)
-    p_f = Z_load_f * Ud
-    p_r = -Z_load_r * Ud
 
-    if front_chamber.port is not None:
-        U_pf = p_f / front_chamber.port.impedance(omega, rho=rho, c=c)
+    if Z_port_f is not None:
+        U_pf = Z_load_f * Ud
+        U_pf /= Z_port_f
     else:
         U_pf = np.zeros_like(omega, dtype=complex)
-    if rear_chamber.port is not None:
-        U_pr = p_r / rear_chamber.port.impedance(omega, rho=rho, c=c)
+    if Z_port_r is not None:
+        U_pr = -Z_load_r
+        U_pr *= Ud
+        U_pr /= Z_port_r
     else:
         U_pr = None
 
