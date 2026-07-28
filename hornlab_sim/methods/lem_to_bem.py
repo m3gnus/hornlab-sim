@@ -215,62 +215,63 @@ def solve(
         {
             "frequency_hz": float(frequency),
             "v_n_per_aperture": {
-                name: complex(velocity_weights[index, aperture_index])
-                for aperture_index, name in enumerate(aperture_names)
+                name: complex(weight)
+                for name, weight in zip(aperture_names, frequency_weights)
             },
         }
-        for index, frequency in enumerate(freqs)
+        for frequency, frequency_weights in zip(freqs, velocity_weights)
     ]
 
     solve_multi = getattr(api, "solve_multi_source", None)
-    callback_names = (
-        "on_frequency_result",
-        "progress_callback",
-        "velocity_source_callback",
-    )
     has_callbacks = any(
-        getattr(base_config, name, None) is not None for name in callback_names
+        getattr(base_config, name, None) is not None
+        for name in (
+            "on_frequency_result",
+            "progress_callback",
+            "velocity_source_callback",
+        )
     )
     if solve_multi is not None and not has_callbacks:
-        all_tags = sorted(tag_owners)
-        basis_sources: list[dict[int, complex]] = []
-        for name in aperture_names:
-            sources = {tag: 0.0 + 0.0j for tag in all_tags}
-            for tag in aperture_tags[name]:
-                sources[int(tag)] = 1.0 + 0.0j
-            basis_sources.append(sources)
+        basis_sources = [
+            {
+                tag: 1.0 + 0.0j if owner == name else 0.0 + 0.0j
+                for tag, owner in sorted(tag_owners.items())
+            }
+            for name in aperture_names
+        ]
 
         basis_results = solve_multi(loaded, freqs, basis_sources, base_config)
-        first_sources = {
-            tag: complex(velocity_weights[0, aperture_indices[owner]])
-            for tag, owner in tag_owners.items()
-        }
-        combined_config = replace(base_config, velocity_sources=first_sources)
+        combined_config = replace(
+            base_config,
+            velocity_sources={
+                tag: complex(velocity_weights[0, aperture_indices[owner]])
+                for tag, owner in tag_owners.items()
+            },
+        )
         aggregated = _combine_basis_results(
             basis_results,
             velocity_weights,
             freqs,
             combined_config=combined_config,
         )
-        aggregated.solver_log.append({"lem_to_bem": per_freq_log})
-        return aggregated
+    else:
+        per_freq_results = []
+        for index, frequency in enumerate(freqs):
+            sources: dict[int, complex] = {}
+            for name, tags in aperture_tags.items():
+                velocity = (
+                    complex(lem_velocities[name][index])
+                    / aperture_area_m2[name]
+                )
+                for tag in tags:
+                    sources[int(tag)] = velocity
+            freq_config = replace(base_config, velocity_sources=sources)
+            single = api.solve_frequencies(
+                loaded, [float(frequency)], freq_config
+            )
+            per_freq_results.append(single)
+        aggregated = _concat_results(per_freq_results, freqs)
 
-    per_freq_results = []
-    for i, f in enumerate(freqs):
-        # Build the per-frequency velocity_sources dict.
-        # v_n[tag] = U_aperture(f) / A_aperture
-        sources: dict[int, complex] = {}
-        for name, tags in aperture_tags.items():
-            U_i = complex(lem_velocities[name][i])
-            v_n = U_i / aperture_area_m2[name]
-            for tag in tags:
-                sources[int(tag)] = v_n
-
-        freq_config = replace(base_config, velocity_sources=sources)
-        single = api.solve_frequencies(loaded, [float(f)], freq_config)
-        per_freq_results.append(single)
-
-    aggregated = _concat_results(per_freq_results, freqs)
     aggregated.solver_log.append({"lem_to_bem": per_freq_log})
     return aggregated
 
@@ -406,9 +407,17 @@ def _combine_basis_results(
             f"velocity_weights shape {weights.shape}, expected {expected}"
         )
 
-    def weighted_result_field(name: str):
+    def weighted_result_field(name: str, *, optional: bool = False):
+        fields = [
+            getattr(result, name, None) if optional else getattr(result, name)
+            for result in basis_results
+        ]
+        if optional and any(field is None for field in fields):
+            if not all(field is None for field in fields):
+                raise ValueError(f"aperture basis {name} fields differ")
+            return None
         values = np.stack(
-            [np.asarray(getattr(result, name)) for result in basis_results],
+            [np.asarray(field) for field in fields],
             axis=0,
         )
         if values.shape[1] != frequencies.size:
@@ -447,21 +456,9 @@ def _combine_basis_results(
             )
             surface_pressure_avg[tag] = np.einsum("fs,sf->f", weights, values)
 
-    surface_fields = [
-        getattr(result, "surface_pressure_complex", None)
-        for result in basis_results
-    ]
-    surface_pressure_complex = None
-    if all(field is not None for field in surface_fields):
-        values = np.stack(
-            [np.asarray(field) for field in surface_fields],
-            axis=0,
-        )
-        surface_pressure_complex = np.einsum(
-            "fs,sf...->f...", weights, values
-        )
-    elif any(field is not None for field in surface_fields):
-        raise ValueError("aperture basis surface-pressure fields differ")
+    surface_pressure_complex = weighted_result_field(
+        "surface_pressure_complex", optional=True
+    )
 
     solver_log = _combine_basis_solver_logs(
         basis_results,
@@ -506,15 +503,16 @@ def _combine_basis_solver_logs(basis_results, weights, frequencies):
         basis_logs.append(logs)
 
     combined_logs: list[dict] = []
-    for frequency_index, frequency in enumerate(frequencies):
-        source_entries = [logs[frequency_index] for logs in basis_logs]
+    for frequency, frequency_weights, source_entries in zip(
+        frequencies, weights, zip(*basis_logs)
+    ):
         entry = dict(source_entries[0])
         entry["frequency_hz"] = float(frequency)
 
         if all(source.get("impedance") is not None for source in source_entries):
             entry["impedance"] = sum(
-                weights[frequency_index, source_index] * source["impedance"]
-                for source_index, source in enumerate(source_entries)
+                weight * source["impedance"]
+                for weight, source in zip(frequency_weights, source_entries)
             )
 
         sphere_fields = [
@@ -523,8 +521,8 @@ def _combine_basis_solver_logs(basis_results, weights, frequencies):
         ]
         if all(field is not None for field in sphere_fields):
             entry["observation_sphere_pressure_complex"] = sum(
-                weights[frequency_index, source_index] * np.asarray(field)
-                for source_index, field in enumerate(sphere_fields)
+                weight * np.asarray(field)
+                for weight, field in zip(frequency_weights, sphere_fields)
             )
         elif any(field is not None for field in sphere_fields):
             raise ValueError("aperture basis sphere-pressure fields differ")
