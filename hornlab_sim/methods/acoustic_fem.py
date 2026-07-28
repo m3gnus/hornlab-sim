@@ -355,23 +355,40 @@ def couple_exterior_impedance(
     if not np.all(np.isfinite(exterior.real) & np.isfinite(exterior.imag)):
         raise ValueError("exterior_impedance contains non-finite values")
 
-    ratios = np.empty((interior.frequencies_hz.size, len(entries)), dtype=np.complex128)
-    driver_load = np.empty(interior.frequencies_hz.size, dtype=np.complex128)
-    for f_index, matrix in enumerate(interior.impedance_matrix):
-        z_ee = matrix[np.ix_(entry_indices, entry_indices)]
-        z_ed = matrix[np.asarray(entry_indices), driver_index]
-        try:
-            ratio = np.linalg.solve(z_ee - exterior[f_index], z_ed)
-        except np.linalg.LinAlgError as exc:
-            raise RuntimeError(
-                "FEM-BEM reduced interface solve failed at "
-                f"{interior.frequencies_hz[f_index]:g} Hz"
-            ) from exc
-        ratios[f_index] = ratio
-        driver_load[f_index] = (
+    entry_index = np.asarray(entry_indices)
+    reduced_interface = interior.impedance_matrix[
+        :, entry_index[:, None], entry_index
+    ]
+    reduced_interface -= exterior
+    entry_drive = interior.impedance_matrix[:, entry_index, driver_index]
+    try:
+        ratios = np.linalg.solve(
+            reduced_interface,
+            entry_drive[..., None],
+        )[..., 0]
+    except np.linalg.LinAlgError as exc:
+        failed_index = 0
+        for f_index, (matrix, drive) in enumerate(
+            zip(reduced_interface, entry_drive)
+        ):
+            try:
+                np.linalg.solve(matrix, drive)
+            except np.linalg.LinAlgError:
+                failed_index = f_index
+                break
+        raise RuntimeError(
+            "FEM-BEM reduced interface solve failed at "
+            f"{interior.frequencies_hz[failed_index]:g} Hz"
+        ) from exc
+    driver_load = np.fromiter(
+        (
             -matrix[driver_index, driver_index]
-            + matrix[driver_index, np.asarray(entry_indices)] @ ratio
-        )
+            + matrix[driver_index, entry_index] @ ratio
+            for matrix, ratio in zip(interior.impedance_matrix, ratios)
+        ),
+        dtype=np.complex128,
+        count=interior.frequencies_hz.size,
+    )
     return FEMBEMCouplingResult(
         frequencies_hz=np.array(interior.frequencies_hz, copy=True),
         driver_boundary=driver,

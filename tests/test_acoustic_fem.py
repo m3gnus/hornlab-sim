@@ -162,6 +162,64 @@ def test_solver_convention_mass_load_converts_and_more_mass_tunes_lower():
     assert heavy_peak < light_peak
 
 
+def test_coupling_batches_interface_solves_without_changing_results(monkeypatch):
+    rng = np.random.default_rng(23)
+    frequencies = np.linspace(80.0, 320.0, 7)
+    raw = rng.normal(size=(frequencies.size, 4, 4)) + 1j * rng.normal(
+        size=(frequencies.size, 4, 4)
+    )
+    interior_matrix = raw + np.swapaxes(raw, 1, 2)
+    exterior = 0.01 * (
+        rng.normal(size=(frequencies.size, 3, 3))
+        + 1j * rng.normal(size=(frequencies.size, 3, 3))
+    )
+    entry_indices = np.asarray([1, 2, 3])
+    expected_ratios = np.empty((frequencies.size, 3), dtype=np.complex128)
+    expected_load = np.empty(frequencies.size, dtype=np.complex128)
+    original_solve = np.linalg.solve
+    for f_index, matrix in enumerate(interior_matrix):
+        ratio = original_solve(
+            matrix[np.ix_(entry_indices, entry_indices)] - exterior[f_index],
+            matrix[entry_indices, 0],
+        )
+        expected_ratios[f_index] = ratio
+        expected_load[f_index] = -matrix[0, 0] + matrix[0, entry_indices] @ ratio
+
+    solve_calls = 0
+
+    def counted_solve(matrix, rhs):
+        nonlocal solve_calls
+        solve_calls += 1
+        return original_solve(matrix, rhs)
+
+    monkeypatch.setattr(acoustic_fem.np.linalg, "solve", counted_solve)
+    result = acoustic_fem.couple_exterior_impedance(
+        acoustic_fem.AcousticFEMResult(
+            frequencies_hz=frequencies,
+            boundary_names=("DRIVER", "ENTRY_1", "ENTRY_2", "ENTRY_3"),
+            boundary_areas_m2={
+                "DRIVER": 1.0,
+                "ENTRY_1": 1.0,
+                "ENTRY_2": 1.0,
+                "ENTRY_3": 1.0,
+            },
+            impedance_matrix=interior_matrix,
+            volume_m3=1.0,
+            loss_factor=0.0,
+        ),
+        exterior,
+        driver_boundary="DRIVER",
+        entry_boundaries=["ENTRY_1", "ENTRY_2", "ENTRY_3"],
+    )
+
+    assert solve_calls == 1
+    np.testing.assert_array_equal(
+        result.entry_to_driver_volume_velocity,
+        expected_ratios,
+    )
+    np.testing.assert_array_equal(result.driver_acoustic_load, expected_load)
+
+
 def test_solve_multiport_rejects_non_finite_solver_output(monkeypatch):
     system = acoustic_fem.assemble_system(_cube_mesh(), ["DRIVER", "ENTRY"])
 
