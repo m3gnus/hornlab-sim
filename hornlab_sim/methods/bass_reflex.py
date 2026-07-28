@@ -52,9 +52,10 @@ class SweepConfig:
 
 def fval(row: dict[str, str], key: str, default: float = 0.0) -> float:
     try:
-        return float(row.get(key, "") or default)
+        value = float(row.get(key, "") or default)
     except (TypeError, ValueError):
         return default
+    return value if math.isfinite(value) else default
 
 
 def sval(row: dict[str, str], key: str) -> str:
@@ -94,12 +95,12 @@ def row_to_driver(row: dict[str, str]) -> Driver | None:
 
 
 def ebp_hint(fs_hz: float, qes: float) -> tuple[float | None, str]:
-    if fs_hz <= 0 or qes <= 0:
+    if not math.isfinite(fs_hz) or not math.isfinite(qes) or fs_hz <= 0 or qes <= 0:
         return None, "unknown"
     ebp = fs_hz / qes
     if 45.0 <= ebp <= 65.0:
         return ebp, "borderline"
-    if ebp < 55.0:
+    if ebp < 45.0:
         return ebp, "sealed"
     return ebp, "vented"
 
@@ -144,6 +145,8 @@ def sealed_qtc_seed(row: dict[str, str], qtc: float = DEFAULT_QTC) -> dict[str, 
 def port_area_for_length_m(vb_l: float, fb_hz: float, lp_m: float) -> float | None:
     """Required round-port-equivalent area for Vb/Fb and physical length."""
 
+    if not all(math.isfinite(value) for value in (vb_l, fb_hz, lp_m)):
+        return None
     vb_m3 = vb_l * 1e-3
     if min(vb_m3, fb_hz) <= 0 or lp_m < 0:
         return None

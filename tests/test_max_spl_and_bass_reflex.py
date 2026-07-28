@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pytest
 
@@ -8,7 +10,9 @@ from hornlab_sim.methods.bass_reflex import (
     SweepConfig,
     alignment_metrics,
     ebp_hint,
+    fval,
     port_area_for_length_m,
+    row_to_driver,
 )
 from hornlab_sim.methods.max_spl import design_front_chamber, xmax_limited_spl
 
@@ -23,6 +27,26 @@ def _driver() -> Driver:
         Cms=351e-6,
         Rms=1.0,
     )
+
+
+def _woofer_row() -> dict[str, str]:
+    return {
+        "Brand": "Example",
+        "Model": "Woofer",
+        "Z_ohm": "8",
+        "Size_in": "15",
+        "Fs_Hz": "35",
+        "Qts": "0.34",
+        "Qes": "0.38",
+        "Qms": "5.0",
+        "Vas_L": "140",
+        "Sd_cm2": "850",
+        "Bl_Tm": "18",
+        "Re_ohm": "5.6",
+        "Mms_g": "110",
+        "Xmax_mm": "8",
+        "Power_W": "800",
+    }
 
 
 def test_xmax_limited_spl_returns_finite_ceiling():
@@ -111,23 +135,7 @@ def test_design_front_chamber_remains_bit_identical(
 
 
 def test_bass_reflex_short_port_metrics_accept_feasible_alignment():
-    row = {
-        "Brand": "Example",
-        "Model": "Woofer",
-        "Z_ohm": "8",
-        "Size_in": "15",
-        "Fs_Hz": "35",
-        "Qts": "0.34",
-        "Qes": "0.38",
-        "Qms": "5.0",
-        "Vas_L": "140",
-        "Sd_cm2": "850",
-        "Bl_Tm": "18",
-        "Re_ohm": "5.6",
-        "Mms_g": "110",
-        "Xmax_mm": "8",
-        "Power_W": "800",
-    }
+    row = _woofer_row()
     config = SweepConfig(
         size_in=15.0,
         vb_values_l=np.array([100.0]),
@@ -156,3 +164,27 @@ def test_bass_reflex_short_port_metrics_accept_feasible_alignment():
     assert metrics["ShortPortScore"] == pytest.approx(float(metrics["ShortPortScore"]))
     assert ebp_hint(35.0, 0.38)[1] == "vented"
     assert port_area_for_length_m(100.0, 35.0, 0.10) > 0.0
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf", "1e999"])
+def test_bass_reflex_csv_parser_treats_nonfinite_values_as_missing(value):
+    row = _woofer_row()
+    row["Fs_Hz"] = value
+
+    assert fval(row, "Fs_Hz") == 0.0
+    assert fval(row, "Fs_Hz", 12.5) == 12.5
+    assert row_to_driver(row) is None
+    assert ebp_hint(float(value), 0.38) == (None, "unknown")
+
+
+@pytest.mark.parametrize(
+    ("vb_l", "fb_hz", "lp_m"),
+    [
+        (math.inf, 35.0, 0.1),
+        (100.0, math.inf, 0.1),
+        (100.0, 35.0, math.inf),
+        (math.nan, 35.0, 0.1),
+    ],
+)
+def test_port_area_rejects_nonfinite_inputs(vb_l, fb_hz, lp_m):
+    assert port_area_for_length_m(vb_l, fb_hz, lp_m) is None
