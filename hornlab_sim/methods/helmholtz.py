@@ -41,7 +41,7 @@ from __future__ import annotations
 
 import math
 import warnings
-from typing import Dict, Literal
+from typing import Callable, Dict, Literal
 
 from .port_acoustics import (
     confined_interior_end_correction,
@@ -124,6 +124,163 @@ def _helmholtz_from_inertance_denominator(
     return (c / (2.0 * math.pi)) * math.sqrt(1.0 / (V_m3 * denom_m_inv))
 
 
+def _bisect_frequency_target(
+    frequency_for_volume_cc: Callable[[float], float],
+    target_hz: float,
+    lower_cc: float,
+    upper_cc: float,
+) -> float:
+    """Bisect a bracket in log-volume space."""
+    lower_value = frequency_for_volume_cc(lower_cc) - target_hz
+    upper_value = frequency_for_volume_cc(upper_cc) - target_hz
+    frequency_tol = max(1.0e-9, target_hz * 1.0e-10)
+    if abs(lower_value) <= frequency_tol:
+        return lower_cc
+    if abs(upper_value) <= frequency_tol:
+        return upper_cc
+    if lower_value * upper_value > 0.0:
+        raise ValueError("target frequency is not bracketed")
+
+    for _ in range(100):
+        midpoint_cc = math.sqrt(lower_cc * upper_cc)
+        midpoint_value = frequency_for_volume_cc(midpoint_cc) - target_hz
+        if (
+            abs(midpoint_value) <= frequency_tol
+            or upper_cc / lower_cc - 1.0 <= 1.0e-12
+        ):
+            return midpoint_cc
+        if lower_value * midpoint_value <= 0.0:
+            upper_cc = midpoint_cc
+        else:
+            lower_cc = midpoint_cc
+            lower_value = midpoint_value
+    return math.sqrt(lower_cc * upper_cc)
+
+
+def _maximize_frequency_on_log_interval(
+    frequency_for_volume_cc: Callable[[float], float],
+    lower_cc: float,
+    upper_cc: float,
+) -> tuple[float, float]:
+    """Refine a sampled local maximum without requiring SciPy."""
+    lower_log = math.log(lower_cc)
+    upper_log = math.log(upper_cc)
+    golden = (math.sqrt(5.0) - 1.0) / 2.0
+    left_log = upper_log - golden * (upper_log - lower_log)
+    right_log = lower_log + golden * (upper_log - lower_log)
+    left_value = frequency_for_volume_cc(math.exp(left_log))
+    right_value = frequency_for_volume_cc(math.exp(right_log))
+
+    for _ in range(80):
+        if left_value < right_value:
+            lower_log = left_log
+            left_log = right_log
+            left_value = right_value
+            right_log = lower_log + golden * (upper_log - lower_log)
+            right_value = frequency_for_volume_cc(math.exp(right_log))
+        else:
+            upper_log = right_log
+            right_log = left_log
+            right_value = left_value
+            left_log = upper_log - golden * (upper_log - lower_log)
+            left_value = frequency_for_volume_cc(math.exp(left_log))
+
+    volume_cc = math.exp(0.5 * (lower_log + upper_log))
+    return volume_cc, frequency_for_volume_cc(volume_cc)
+
+
+def _largest_volume_for_target(
+    frequency_for_volume_cc: Callable[[float], float],
+    target_hz: float,
+    rayleigh_volume_cc: float,
+) -> float:
+    """Return the largest modeled volume whose frequency equals ``target_hz``.
+
+    The empirical confined-neck model can have three positive roots. The
+    largest is the branch connected to the large-volume, Rayleigh-like regime
+    and is the conservative chamber-sizing result.
+    """
+    target_hz = _require_finite_positive("target_hz", target_hz)
+    rayleigh_volume_cc = _require_finite_positive(
+        "rayleigh_volume_cc",
+        rayleigh_volume_cc,
+    )
+    lower_cc = rayleigh_volume_cc / 1000.0
+    point_count = 2049
+    log_step = math.log(rayleigh_volume_cc / lower_cc) / (point_count - 1)
+    volumes_cc = [
+        lower_cc * math.exp(index * log_step)
+        for index in range(point_count)
+    ]
+    frequencies_hz = [
+        frequency_for_volume_cc(volume_cc)
+        for volume_cc in volumes_cc
+    ]
+    residuals = [
+        frequency_hz - target_hz
+        for frequency_hz in frequencies_hz
+    ]
+    frequency_tol = max(1.0e-9, target_hz * 1.0e-10)
+
+    if residuals[-1] > frequency_tol:
+        raise ValueError(
+            "confined-neck frequency at the Rayleigh volume exceeds the target"
+        )
+    if abs(residuals[-1]) <= frequency_tol:
+        return rayleigh_volume_cc
+
+    local_maxima = [
+        index
+        for index in range(1, point_count - 1)
+        if (
+            frequencies_hz[index] > frequencies_hz[index - 1]
+            and frequencies_hz[index] > frequencies_hz[index + 1]
+        )
+    ]
+    if local_maxima:
+        maximum_index = local_maxima[-1]
+        maximum_cc, maximum_hz = _maximize_frequency_on_log_interval(
+            frequency_for_volume_cc,
+            volumes_cc[maximum_index - 1],
+            volumes_cc[maximum_index + 1],
+        )
+        if maximum_hz >= target_hz - frequency_tol:
+            if abs(maximum_hz - target_hz) <= frequency_tol:
+                return maximum_cc
+            return _bisect_frequency_target(
+                frequency_for_volume_cc,
+                target_hz,
+                maximum_cc,
+                rayleigh_volume_cc,
+            )
+
+    root_candidates: list[tuple[float, float] | float] = []
+    for index in range(point_count - 1):
+        lower_value = residuals[index]
+        upper_value = residuals[index + 1]
+        if abs(lower_value) <= frequency_tol:
+            root_candidates.append(volumes_cc[index])
+        if lower_value * upper_value < 0.0:
+            root_candidates.append(
+                (volumes_cc[index], volumes_cc[index + 1])
+            )
+    if not root_candidates:
+        raise ValueError(
+            f"target_fc_hz={target_hz:g} is unreachable with this port "
+            "geometry under the confined-neck model"
+        )
+
+    last_candidate = root_candidates[-1]
+    if isinstance(last_candidate, float):
+        return last_candidate
+    return _bisect_frequency_target(
+        frequency_for_volume_cc,
+        target_hz,
+        last_candidate[0],
+        last_candidate[1],
+    )
+
+
 def _uniform_port_terms(
     A_total_m2: float,
     L_geom_m: float,
@@ -136,13 +293,16 @@ def _uniform_port_terms(
     A_one = A_total_m2 / n_parallel
     radius = math.sqrt(A_one / math.pi)
     entry_delta, exit_delta = end_correction_terms(radius, radius, end_corr)
-    if interior_end_correction == "ingard" and exit_delta > 0.0:
-        base_mode = "flanged" if exit_delta >= 0.85 * radius * 0.999 else "free"
-        exit_delta = confined_interior_end_correction(
-            radius,
-            chamber_volume_m3,
-            base_mode=base_mode,
-        )
+    if interior_end_correction == "ingard":
+        if exit_delta > 0.0:
+            base_mode = (
+                "flanged" if exit_delta >= 0.85 * radius * 0.999 else "free"
+            )
+            exit_delta = confined_interior_end_correction(
+                radius,
+                chamber_volume_m3,
+                base_mode=base_mode,
+            )
     elif interior_end_correction != "rayleigh":
         raise ValueError(
             "interior_end_correction must be 'rayleigh' or 'ingard', "
@@ -342,6 +502,11 @@ def mid_chamber_helmholtz(
     ``integral dx/A(x)`` for a linear-radius taper:
     ``M = rho*L/(pi*a_entry*a_exit)``. End corrections use the local entry
     and chamber-side radii.
+
+    When ``chamber_volume_cc`` is omitted, Rayleigh modes use the closed-form
+    volume inversion. The empirical confined-neck mode is non-monotone in
+    volume, so it is inverted numerically and returns the largest root: the
+    branch connected to the large-volume, Rayleigh-like regime.
     """
     explicit_mid = mids is None
     if mids is not None:
@@ -394,6 +559,43 @@ def mid_chamber_helmholtz(
     A = A_one * port_count
     A_exit_one = chamber_area_cm2 * 1e-4
     L_geom = tube_depth_mm * 1e-3
+
+    def evaluate_port_terms(
+        chamber_volume_m3: float,
+        correction_mode: str,
+    ) -> tuple[float, float, float, float, float]:
+        if port_model == "uniform":
+            denom, entry, exit_, effective_length = _uniform_port_terms(
+                A,
+                L_geom,
+                end_corr,
+                port_count,
+                chamber_volume_m3=chamber_volume_m3,
+                interior_end_correction=correction_mode,
+            )
+            return denom, entry, exit_, effective_length, entry + exit_
+        if port_model == "frustum":
+            a_entry = math.sqrt(A_one / math.pi)
+            a_exit = math.sqrt(A_exit_one / math.pi)
+            denom_one, entry, exit_ = frustum_port_inertance_denominator(
+                a_entry,
+                a_exit,
+                L_geom,
+                end_corr=end_corr,
+                interior_end_correction=correction_mode,
+                chamber_volume_m3=chamber_volume_m3,
+            )
+            denom = denom_one / port_count
+            effective_length = denom * A
+            return (
+                denom,
+                entry,
+                exit_,
+                effective_length,
+                effective_length - L_geom,
+            )
+        raise ValueError(f"unknown port_model {port_model!r}")
+
     if chamber_volume_cc is None and mids is not None:
         chamber_volume_cc = mids.chamber.resolved_volume_cc(
             mids.driver,
@@ -408,60 +610,63 @@ def mid_chamber_helmholtz(
                 n_parallel=port_count,
             )
             denom_default = L_default / A
+            radius = math.sqrt(A_one / math.pi)
+            _, rayleigh_exit_delta = end_correction_terms(
+                radius,
+                radius,
+                end_corr,
+            )
         elif port_model == "frustum":
-            # Ingard depends on the still-unknown chamber volume, so use the
-            # matching Rayleigh frustum as the closed-form sizing seed.
             a_entry = math.sqrt(A_one / math.pi)
             a_exit = math.sqrt(A_exit_one / math.pi)
-            denom_one, _, _ = frustum_port_inertance_denominator(
-                a_entry,
-                a_exit,
-                L_geom,
-                end_corr=end_corr,
+            denom_one, _, rayleigh_exit_delta = (
+                frustum_port_inertance_denominator(
+                    a_entry,
+                    a_exit,
+                    L_geom,
+                    end_corr=end_corr,
+                )
             )
             denom_default = denom_one / port_count
         else:
             raise ValueError(f"unknown port_model {port_model!r}")
         omega_over_c = (2.0 * math.pi * target_fc_hz) / c
-        chamber_volume_cc = 1.0 / (
+        rayleigh_volume_cc = 1.0 / (
             denom_default * omega_over_c ** 2
         ) * 1e6
+        if (
+            interior_end_correction == "ingard"
+            and rayleigh_exit_delta > 0.0
+        ):
+            def frequency_for_volume_cc(volume_cc: float) -> float:
+                denom_for_volume, _, _, _, _ = evaluate_port_terms(
+                    volume_cc * 1e-6,
+                    interior_end_correction,
+                )
+                return _helmholtz_from_inertance_denominator(
+                    volume_cc * 1e-6,
+                    denom_for_volume,
+                    c,
+                )
+
+            chamber_volume_cc = _largest_volume_for_target(
+                frequency_for_volume_cc,
+                target_fc_hz,
+                rayleigh_volume_cc,
+            )
+        else:
+            chamber_volume_cc = rayleigh_volume_cc
     else:
         chamber_volume_cc = _require_finite_positive(
             "chamber_volume_cc", chamber_volume_cc,
         )
 
     V = chamber_volume_cc * 1e-6
-    entry_delta = 0.0
-    exit_delta = 0.0
-    if port_model == "uniform":
-        denom, entry_delta, exit_delta, L_eff = _uniform_port_terms(
-            A,
-            L_geom,
-            end_corr,
-            port_count,
-            chamber_volume_m3=V,
-            interior_end_correction=interior_end_correction,
-        )
-        delta = entry_delta + exit_delta
-        f = _helmholtz_from_inertance_denominator(V, denom, c)
-    elif port_model == "frustum":
-        a_entry = math.sqrt(A_one / math.pi)
-        a_exit = math.sqrt(A_exit_one / math.pi)
-        denom_one, entry_delta, exit_delta = frustum_port_inertance_denominator(
-            a_entry,
-            a_exit,
-            L_geom,
-            end_corr=end_corr,
-            interior_end_correction=interior_end_correction,
-            chamber_volume_m3=V,
-        )
-        denom = denom_one / port_count
-        f = _helmholtz_from_inertance_denominator(V, denom, c)
-        L_eff = denom * A
-        delta = L_eff - L_geom
-    else:
-        raise ValueError(f"unknown port_model {port_model!r}")
+    denom, entry_delta, exit_delta, L_eff, delta = evaluate_port_terms(
+        V,
+        interior_end_correction,
+    )
+    f = _helmholtz_from_inertance_denominator(V, denom, c)
     q_eval_hz = f if loss_eval_frequency_hz is None else _require_finite_positive(
         "loss_eval_frequency_hz", loss_eval_frequency_hz,
     )

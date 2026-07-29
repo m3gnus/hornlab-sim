@@ -261,29 +261,36 @@ def frustum_port_inertance_denominator(
         a_exit_m,
         end_corr,
     )
-    if interior_end_correction == "ingard" and exit_delta_m > 0.0:
-        if chamber_volume_m3 is None:
-            raise ValueError(
-                "chamber_volume_m3 is required for interior_end_correction='ingard'"
+    if interior_end_correction == "ingard":
+        if exit_delta_m > 0.0:
+            if chamber_volume_m3 is None:
+                raise ValueError(
+                    "chamber_volume_m3 is required for "
+                    "interior_end_correction='ingard'"
+                )
+            # Preserve the local end type while applying the confined-cavity scale.
+            #
+            # The confined-neck radius is the NARROWER of the two frustum radii,
+            # not the chamber-side one. The Ingard scaling saturates at
+            # ``max_confinement`` once ``a`` approaches the chamber length scale
+            # R_v = (3V/4pi)^(1/3); for a flared mid port the chamber-side radius
+            # is already comparable to R_v, so keying the correction to it pins
+            # the clamp and makes dL volume-independent — which collapses the
+            # volume-to-frequency sensitivity back onto the legacy Rayleigh curve
+            # this model exists to replace. The narrow end is what actually
+            # confines the neck velocity field. See the CAFMEH clay-volume
+            # regression in tests/test_precision_lumped_physics.py.
+            base_mode = (
+                "flanged"
+                if exit_delta_m
+                >= FLANGED_END_CORRECTION_FACTOR * a_exit_m * 0.999
+                else "free"
             )
-        # Preserve the local end type while applying the confined-cavity scale.
-        #
-        # The confined-neck radius is the NARROWER of the two frustum radii,
-        # not the chamber-side one. The Ingard scaling saturates at
-        # ``max_confinement`` once ``a`` approaches the chamber length scale
-        # R_v = (3V/4pi)^(1/3); for a flared mid port the chamber-side radius
-        # is already comparable to R_v, so keying the correction to it pins
-        # the clamp and makes dL volume-independent — which collapses the
-        # volume-to-frequency sensitivity back onto the legacy Rayleigh curve
-        # this model exists to replace. The narrow end is what actually
-        # confines the neck velocity field. See the CAFMEH clay-volume
-        # regression in tests/test_precision_lumped_physics.py.
-        base_mode = "flanged" if exit_delta_m >= FLANGED_END_CORRECTION_FACTOR * a_exit_m * 0.999 else "free"
-        exit_delta_m = confined_interior_end_correction(
-            min(a_entry_m, a_exit_m),
-            chamber_volume_m3,
-            base_mode=base_mode,
-        )
+            exit_delta_m = confined_interior_end_correction(
+                min(a_entry_m, a_exit_m),
+                chamber_volume_m3,
+                base_mode=base_mode,
+            )
     elif interior_end_correction != "rayleigh":
         raise ValueError(
             "interior_end_correction must be 'rayleigh' or 'ingard', "

@@ -7,6 +7,7 @@ import pytest
 
 from hornlab_sim.methods.bandpass import Chamber, Driver, Port, simulate
 from hornlab_sim.methods.helmholtz import (
+    _largest_volume_for_target,
     helmholtz,
     mid_chamber_helmholtz,
 )
@@ -104,6 +105,97 @@ def test_frustum_target_sizing_uses_tapered_port_inertance():
     )
 
     assert result["f_Hz"] == pytest.approx(target_hz)
+
+
+@pytest.mark.parametrize("port_model", ["uniform", "frustum"])
+def test_ingard_target_sizing_inverts_the_selected_port_model(port_model):
+    target_hz = 600.0
+    result = mid_chamber_helmholtz(
+        port_count=1,
+        entry_area_cm2=8.5,
+        chamber_area_cm2=21.2,
+        tube_depth_mm=10.0,
+        target_fc_hz=target_hz,
+        port_model=port_model,
+        interior_end_correction="ingard",
+    )
+
+    assert result["f_Hz"] == pytest.approx(target_hz, abs=1e-6)
+
+
+def test_ingard_target_sizing_returns_largest_root():
+    result = mid_chamber_helmholtz(
+        port_count=1,
+        entry_area_cm2=8.5,
+        chamber_area_cm2=21.2,
+        tube_depth_mm=10.0,
+        target_fc_hz=728.31,
+        port_model="uniform",
+        interior_end_correction="ingard",
+    )
+
+    assert result["V_cc"] == pytest.approx(62.7320, rel=1e-5)
+    assert result["f_Hz"] == pytest.approx(728.31, abs=1e-6)
+
+
+def test_largest_root_solver_keeps_a_tangent_root():
+    def frequency(volume_cc):
+        return 100.0 - (volume_cc - 1.0) * (volume_cc - 2.0) ** 2
+
+    volume_cc = _largest_volume_for_target(frequency, 100.0, 3.0)
+
+    assert volume_cc == pytest.approx(2.0, abs=1e-6)
+
+
+def test_largest_root_solver_reports_unreachable_target():
+    with pytest.raises(ValueError, match="unreachable"):
+        _largest_volume_for_target(lambda volume_cc: 99.0, 100.0, 3.0)
+
+
+@pytest.mark.parametrize("port_model", ["uniform", "frustum"])
+def test_ingard_branch_decreases_strictly_above_its_last_maximum(port_model):
+    volumes_cc = np.geomspace(43.3, 200.0, 128)
+    frequencies_hz = np.array(
+        [
+            mid_chamber_helmholtz(
+                chamber_volume_cc=float(volume_cc),
+                port_count=1,
+                entry_area_cm2=8.5,
+                chamber_area_cm2=21.2,
+                tube_depth_mm=10.0,
+                target_fc_hz=600.0,
+                port_model=port_model,
+                interior_end_correction="ingard",
+            )["f_Hz"]
+            for volume_cc in volumes_cc
+        ]
+    )
+    slopes = np.diff(frequencies_hz)
+    maxima = np.flatnonzero((slopes[:-1] > 0.0) & (slopes[1:] < 0.0)) + 1
+
+    assert maxima.size == 1
+    assert np.all(slopes[maxima[-1] :] < 0.0)
+
+
+@pytest.mark.parametrize("port_model", ["uniform", "frustum"])
+def test_ingard_without_an_interior_end_term_is_a_rayleigh_noop(port_model):
+    common = dict(
+        target_fc_hz=1200.0,
+        end_corr="flanged",
+        port_model=port_model,
+    )
+
+    rayleigh = mid_chamber_helmholtz(
+        interior_end_correction="rayleigh",
+        **common,
+    )
+    ingard = mid_chamber_helmholtz(
+        interior_end_correction="ingard",
+        **common,
+    )
+
+    assert ingard["V_cc"] == pytest.approx(rayleigh["V_cc"])
+    assert ingard["f_Hz"] == pytest.approx(rayleigh["f_Hz"])
 
 
 def test_frustum_ingard_correction_uses_the_narrow_frustum_radius():
