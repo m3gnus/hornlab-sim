@@ -324,21 +324,19 @@ def mid_chamber_helmholtz(
     """Compute the closed-form Helmholtz estimate for one mid front chamber.
 
     This is a first-pass sizing helper, not a final tuning oracle. The
-    accompanying research notes (§2a / §2d) cite measurements from an
-    archived build thread and Ingard 1953: the Rayleigh closed form
-    over-shoots the chamber-volume-to-frequency shift by ~1.75×, so the
-    BEM-resolved f_H usually sits roughly 10-15% lower than this estimate.
+    accompanying research notes (§2a / §2d) cite measurements from an archived
+    build thread where the Rayleigh closed form over-shoots the
+    chamber-volume-to-frequency shift by ~1.75×, so the BEM-resolved f_H
+    usually sits roughly 10-15% lower than this estimate.
     The mid-port geometry also follows Danley US6411718 col. 8-10:
     use conical/frustum tap channels with a conical or near-conical horn body.
 
     ``interior_end_correction="ingard"`` is opt-in. It replaces the
-    chamber-side Rayleigh term with the confined-neck correction described by
-    Ingard, "On the Theory and Design of Acoustic Resonators", JASA 25
-    (1953): the interior correction scales with the aperture radius relative
-    to the chamber volume length scale, so it grows as small chambers confine
-    the neck velocity field. This compresses the chamber-volume-to-frequency
-    sensitivity seen in the measured clay-volume regression from an archived
-    build thread.
+    chamber-side Rayleigh term with an empirical, Ingard-motivated reciprocal
+    scaling. It is not the decreasing confined-aperture correction derived in
+    Ingard 1953. The fitted reciprocal scaling grows as small chambers confine
+    the neck velocity field and compresses the chamber-volume-to-frequency
+    sensitivity seen in the single archived clay-volume regression.
 
     ``port_model="frustum"`` evaluates the port mass by
     ``integral dx/A(x)`` for a linear-radius taper:
@@ -528,8 +526,7 @@ def mid_chamber_helmholtz(
         "cylinder_depth_mm": cylinder_depth,
         "explicit_mid_geometry": explicit_mid,
         "formula_bias_note": (
-            "research notes §2a/§2d: archived build-thread measurements / "
-            "Ingard 1953 indicate "
+            "research notes §2a/§2d: archived build-thread measurements indicate "
             "the closed form over-shoots the V→f_H shift by ~1.75x; "
             "BEM/measurement should set final tuning"
         ),

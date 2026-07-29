@@ -162,6 +162,28 @@ def test_frustum_ingard_keeps_the_measured_volume_shift_bracket():
     assert abs(shift - measured_shift) < 0.25 * abs(rayleigh_shift - measured_shift)
 
 
+def test_frustum_ingard_narrow_radius_clamp_stays_below_anchor_volumes():
+    entry_radius = math.sqrt(8.5e-4 / math.pi)
+    exit_radius = math.sqrt(21.2e-4 / math.pi)
+    confinement_factor = 9.0 / 8.0
+    max_confinement = 0.85
+
+    def saturation_volume_cc(radius):
+        return (
+            4.0
+            * math.pi
+            / 3.0
+            * (confinement_factor * radius / max_confinement) ** 3
+            * 1e6
+        )
+
+    narrow_saturation_cc = saturation_volume_cc(min(entry_radius, exit_radius))
+    exit_saturation_cc = saturation_volume_cc(exit_radius)
+
+    assert narrow_saturation_cc == pytest.approx(43.2208, rel=1e-5)
+    assert narrow_saturation_cc < 64.0 < 130.0 < exit_saturation_cc
+
+
 def test_geometry_derived_port_q_is_sane_and_monotonic():
     q_small = viscothermal_port_q(1000.0, 6.0e-4, hydraulic_radius_m=0.003)
     q_large = viscothermal_port_q(1000.0, 12.0e-4, hydraulic_radius_m=0.004)

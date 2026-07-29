@@ -179,25 +179,25 @@ def confined_interior_end_correction(
     confinement_factor: float = 9.0 / 8.0,
     max_confinement: float = 0.85,
 ) -> float:
-    """Ingard-style chamber-side confined-neck end correction.
+    """Empirical chamber-side confined-neck end correction.
 
     Ingard, "On the Theory and Design of Acoustic Resonators", JASA 25
-    (1953), treats the neck reactance as geometry-dependent rather than a
-    universal Rayleigh constant. For a neck opening into a finite chamber,
-    the chamber-side velocity field is increasingly confined as the aperture
-    radius ``a`` approaches the chamber length scale
-    ``R_v = (3V / 4π)^(1/3)``. This helper applies that confined-neck scaling
-    to the local Rayleigh term with a bounded Padé form:
+    (1953), establishes that neck reactance depends on the aperture/cavity
+    geometry rather than a universal Rayleigh constant. The reciprocal form
+    used here is only Ingard-motivated, not a formula from that paper:
 
         ΔL_i = k_i a / (1 - β a / R_v)
 
-    where ``k_i`` is the local Rayleigh factor, ``β = 9/8`` is the
-    first-order confined-neck scale used by the accompanying research notes, and
-    the denominator is clamped so tiny chambers cannot produce a singular
+    Ingard's confined circular-aperture correction decreases as the aperture
+    approaches the cavity width; this empirical form instead increases with
+    ``a / R_v``, where ``R_v = (3V / 4π)^(1/3)``. Its ``β = 9/8`` and
+    ``max_confinement = 0.85`` defaults are calibrated to the single CAFMEH
+    clay-volume anchor. The classical decreasing form predicts a +46.5%
+    frequency shift for that anchor, versus +23.6% measured.
+
+    The denominator is clamped so tiny chambers cannot produce a singular
     lumped correction. Large chambers approach Rayleigh-like behavior as
-    ``a/R_v → 0``; the confinement scaling itself never switches off, so
-    this is a permanent geometry-dependent model, not an asymptotic patch
-    on the Rayleigh constant.
+    ``a/R_v → 0``.
     """
     radius_m = _require_finite_positive("radius_m", radius_m)
     chamber_volume_m3 = _require_finite_positive(
@@ -211,6 +211,10 @@ def confined_interior_end_correction(
         raise ValueError("max_confinement must be < 1")
 
     chamber_radius_m = (3.0 * chamber_volume_m3 / (4.0 * math.pi)) ** (1.0 / 3.0)
+    # The clamp starts at
+    # V_sat = (4π/3) * (confinement_factor * radius_m / max_confinement)^3.
+    # A radius that makes V_sat span the design range erases the intended
+    # chamber-volume sensitivity.
     x = min(max_confinement, confinement_factor * radius_m / chamber_radius_m)
     return _end_factor(base_mode) * radius_m / (1.0 - x)
 
