@@ -327,12 +327,33 @@ def _triangle_face_areas(loaded: "LoadedMesh") -> NDArray[np.float64]:
     return 0.5 * np.linalg.norm(np.cross(p1 - p0, p2 - p0), axis=1)
 
 
+def _check_shared_sphere_geometry(results, *, context: str) -> None:
+    """Require frequency/source-independent sphere sampling geometry."""
+    first = results[0]
+    for name in ("sphere_points", "sphere_theta_deg", "sphere_phi_deg"):
+        reference = getattr(first, name, None)
+        for result in results[1:]:
+            candidate = getattr(result, name, None)
+            if reference is None or candidate is None:
+                if reference is not None or candidate is not None:
+                    raise ValueError(f"{context} sphere geometry fields differ")
+            elif not np.array_equal(
+                np.asarray(reference),
+                np.asarray(candidate),
+            ):
+                raise ValueError(f"{context} sphere geometry fields differ")
+
+
 def _concat_results(per_freq_results, frequencies_hz):
     """Concatenate single-frequency SolveResults along the frequency axis."""
     if not per_freq_results:
         raise ValueError("no per-frequency results to concatenate")
 
     first = per_freq_results[0]
+    _check_shared_sphere_geometry(
+        per_freq_results,
+        context="per-frequency",
+    )
 
     pressure_complex = np.concatenate(
         [r.pressure_complex for r in per_freq_results], axis=0
@@ -361,6 +382,16 @@ def _concat_results(per_freq_results, frequencies_hz):
     elif any(field is not None for field in surface_fields):
         raise ValueError("per-frequency surface-pressure fields differ")
 
+    sphere_pressure_complex = None
+    sphere_fields = [
+        getattr(result, "sphere_pressure_complex", None)
+        for result in per_freq_results
+    ]
+    if all(field is not None for field in sphere_fields):
+        sphere_pressure_complex = np.concatenate(sphere_fields, axis=0)
+    elif any(field is not None for field in sphere_fields):
+        raise ValueError("per-frequency sphere-pressure fields differ")
+
     native_diagnostics = [
         entry
         for result in per_freq_results
@@ -370,6 +401,8 @@ def _concat_results(per_freq_results, frequencies_hz):
     optional_fields = {}
     if hasattr(first, "surface_pressure_complex"):
         optional_fields["surface_pressure_complex"] = surface_pressure_complex
+    if hasattr(first, "sphere_pressure_complex"):
+        optional_fields["sphere_pressure_complex"] = sphere_pressure_complex
     if hasattr(first, "native_diagnostics"):
         optional_fields["native_diagnostics"] = native_diagnostics
     return replace(
@@ -406,6 +439,10 @@ def _combine_basis_results(
         raise ValueError(
             f"velocity_weights shape {weights.shape}, expected {expected}"
         )
+    _check_shared_sphere_geometry(
+        basis_results,
+        context="aperture basis",
+    )
 
     def weighted_result_field(name: str, *, optional: bool = False):
         fields = [
@@ -459,6 +496,9 @@ def _combine_basis_results(
     surface_pressure_complex = weighted_result_field(
         "surface_pressure_complex", optional=True
     )
+    sphere_pressure_complex = weighted_result_field(
+        "sphere_pressure_complex", optional=True
+    )
 
     solver_log = _combine_basis_solver_logs(
         basis_results,
@@ -468,6 +508,8 @@ def _combine_basis_results(
     optional_fields = {}
     if hasattr(first, "surface_pressure_complex"):
         optional_fields["surface_pressure_complex"] = surface_pressure_complex
+    if hasattr(first, "sphere_pressure_complex"):
+        optional_fields["sphere_pressure_complex"] = sphere_pressure_complex
     return replace(
         first,
         frequencies_hz=np.array(frequencies, copy=True),

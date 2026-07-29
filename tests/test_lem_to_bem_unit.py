@@ -45,6 +45,10 @@ class _FakeSolveResult:
     solver_log: list[dict] = field(default_factory=list)
     surface_pressure_avg: dict[int, np.ndarray] | None = None
     surface_pressure_complex: np.ndarray | None = None
+    sphere_pressure_complex: np.ndarray | None = None
+    sphere_points: np.ndarray | None = None
+    sphere_theta_deg: np.ndarray | None = None
+    sphere_phi_deg: np.ndarray | None = None
     observation_angles_deg: np.ndarray = field(
         default_factory=lambda: np.linspace(-60.0, 60.0, 5)
     )
@@ -372,6 +376,13 @@ def test_multi_source_superposition_matches_per_frequency_loop(monkeypatch):
             ],
             surface_pressure_avg=surface_avg,
             surface_pressure_complex=surface_pressure,
+            sphere_pressure_complex=sphere_pressure,
+            sphere_points=np.array(
+                [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                dtype=np.float64,
+            ),
+            sphere_theta_deg=np.array([90.0, 90.0]),
+            sphere_phi_deg=np.array([0.0, 90.0]),
             config=config,
             native_diagnostics=[{"frequency_hz": float(f)} for f in freq_array],
         )
@@ -447,6 +458,13 @@ def test_multi_source_superposition_matches_per_frequency_loop(monkeypatch):
         rtol=1.0e-13,
         atol=1.0e-13,
     )
+    np.testing.assert_allclose(
+        optimized.sphere_pressure_complex,
+        sequential.sphere_pressure_complex,
+        rtol=1.0e-13,
+        atol=1.0e-13,
+    )
+    assert optimized.sphere_pressure_complex.shape == (len(frequencies), 2)
     assert len(optimized.solver_log) == len(sequential.solver_log) == (
         len(frequencies) + 1
     )
@@ -460,6 +478,22 @@ def test_multi_source_superposition_matches_per_frequency_loop(monkeypatch):
             optimized.solver_log[frequency_index][
                 "observation_sphere_pressure_complex"
             ],
+            sequential.solver_log[frequency_index][
+                "observation_sphere_pressure_complex"
+            ],
+            rtol=1.0e-13,
+            atol=1.0e-13,
+        )
+        np.testing.assert_allclose(
+            optimized.sphere_pressure_complex[frequency_index],
+            optimized.solver_log[frequency_index][
+                "observation_sphere_pressure_complex"
+            ],
+            rtol=1.0e-13,
+            atol=1.0e-13,
+        )
+        np.testing.assert_allclose(
+            sequential.sphere_pressure_complex[frequency_index],
             sequential.solver_log[frequency_index][
                 "observation_sphere_pressure_complex"
             ],
@@ -482,11 +516,32 @@ def test_multi_source_superposition_matches_per_frequency_loop(monkeypatch):
 def test_concat_results_stacks_along_freq_axis():
     r1 = _fake_solve_result(freqs=[100.0])
     r2 = _fake_solve_result(freqs=[200.0])
+    sphere_points = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+    for result, values in ((r1, [1.0, 2.0]), (r2, [3.0, 4.0])):
+        result.sphere_pressure_complex = np.array([values], dtype=np.complex128)
+        result.sphere_points = sphere_points
+        result.sphere_theta_deg = np.array([90.0, 90.0])
+        result.sphere_phi_deg = np.array([0.0, 90.0])
     out = _concat_results([r1, r2], frequencies_hz=[100.0, 200.0])
     assert out.pressure_complex.shape[0] == 2
     assert out.spl_db.shape[0] == 2
     assert out.impedance.shape[0] == 2
+    np.testing.assert_array_equal(
+        out.sphere_pressure_complex,
+        np.array([[1.0, 2.0], [3.0, 4.0]]),
+    )
+    assert out.sphere_pressure_complex.shape[0] == out.frequencies_hz.size
     assert list(out.frequencies_hz) == [100.0, 200.0]
+
+
+def test_concat_results_rejects_different_sphere_geometry():
+    r1 = _fake_solve_result(freqs=[100.0])
+    r2 = _fake_solve_result(freqs=[200.0])
+    r1.sphere_points = np.array([[1.0, 0.0, 0.0]])
+    r2.sphere_points = np.array([[0.0, 1.0, 0.0]])
+
+    with pytest.raises(ValueError, match="sphere geometry"):
+        _concat_results([r1, r2], frequencies_hz=[100.0, 200.0])
 
 
 # ---------------------------------------------------------------------------
