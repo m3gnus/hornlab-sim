@@ -298,17 +298,14 @@ def alignment_metrics(
         flanged_outside=PORT_FLANGED_OUTSIDE,
         n_parallel=1,
     )
-    try:
-        sim = simulate(
-            driver=driver,
-            front_chamber=Chamber(volume=FRONT_FREE_AIR_VOLUME_M3),
-            rear_chamber=Chamber(volume=vb_l * 1e-3, port=port),
-            freq=freq,
-            v_g=V_REF,
-            driver_radiates_directly=True,
-        )
-    except Exception:
-        return None
+    sim = simulate(
+        driver=driver,
+        front_chamber=Chamber(volume=FRONT_FREE_AIR_VOLUME_M3),
+        rear_chamber=Chamber(volume=vb_l * 1e-3, port=port),
+        freq=freq,
+        v_g=V_REF,
+        driver_radiates_directly=True,
+    )
 
     xmax_mm = fval(row, "Xmax_mm")
     re_ohm = fval(row, "Re_ohm")

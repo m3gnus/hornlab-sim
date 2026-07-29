@@ -5,6 +5,7 @@ import math
 import numpy as np
 import pytest
 
+import hornlab_sim.methods.bass_reflex as bass_reflex
 from hornlab_sim.methods.bandpass import Driver
 from hornlab_sim.methods.bass_reflex import (
     SweepConfig,
@@ -169,6 +170,24 @@ def test_bass_reflex_short_port_metrics_accept_feasible_alignment():
     assert metrics["ShortPortScore"] == pytest.approx(float(metrics["ShortPortScore"]))
     assert ebp_hint(35.0, 0.38)[1] == "vented"
     assert port_area_for_length_m(100.0, 35.0, 0.10) > 0.0
+
+
+def test_bass_reflex_short_port_metrics_propagates_simulator_failures(monkeypatch):
+    row = _woofer_row()
+    config = _sweep_config(
+        velocity_cap_mps=1.0e6,
+        max_equiv_diam_mm=1000.0,
+    )
+    driver = row_to_driver(row)
+    freq = np.logspace(np.log10(20.0), np.log10(200.0), 48)
+
+    def fail_simulation(**kwargs):
+        raise RuntimeError("synthetic simulator failure")
+
+    monkeypatch.setattr(bass_reflex, "simulate", fail_simulation)
+
+    with pytest.raises(RuntimeError, match="synthetic simulator failure"):
+        alignment_metrics(row, driver, freq, config, 100.0, 35.0, 0.10)
 
 
 def _sweep_config(**overrides) -> SweepConfig:
