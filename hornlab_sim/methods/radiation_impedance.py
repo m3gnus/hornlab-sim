@@ -73,6 +73,7 @@ class RadiationMatrixDiagnostics:
     reciprocity_max_abs: NDArray[np.float64]
     reciprocity_max_rel: NDArray[np.float64]
     passivity_min_eig: NDArray[np.float64]
+    passivity_min_eig_reciprocal: NDArray[np.float64]
     passivity_ok: NDArray[np.bool_]
     low_ka_self_impedance: dict[str, NDArray[np.complex128]]
     low_ka_self_impedance_rel_error: dict[str, NDArray[np.float64]]
@@ -480,9 +481,27 @@ def matrix_diagnostics(
     c: float = C_AIR,
     low_ka_max: float = 0.35,
     passivity_tol: float = 1e-9,
+    passivity_rtol: float = 0.0,
 ) -> RadiationMatrixDiagnostics:
-    """Return reciprocity, passivity, and optional low-``ka`` diagnostics."""
+    """Return reciprocity, passivity, and optional low-``ka`` diagnostics.
+
+    ``passivity_min_eig`` checks the full matrix without hiding
+    non-reciprocity. ``passivity_ok`` checks the reciprocal projection using
+    ``passivity_tol + passivity_rtol * norm``. A negative raw eigenvalue paired
+    with a passing projected result is therefore non-reciprocity-limited, not
+    evidence that the reciprocal part is active.
+
+    ``passivity_rtol`` defaults to zero because its numerical floor has not yet
+    been calibrated by a mesh/quadrature refinement study.
+    """
     matrix = _validate_matrix_shape(result)
+    passivity_atol = float(passivity_tol)
+    passivity_relative = float(passivity_rtol)
+    if not math.isfinite(passivity_atol) or passivity_atol < 0.0:
+        raise ValueError("passivity_tol must be finite and non-negative")
+    if not math.isfinite(passivity_relative) or passivity_relative < 0.0:
+        raise ValueError("passivity_rtol must be finite and non-negative")
+
     transposed = np.swapaxes(matrix, 1, 2)
     diff = matrix - transposed
     reciprocity_max_abs = np.max(np.abs(diff), axis=(1, 2))
@@ -493,10 +512,23 @@ def matrix_diagnostics(
     reciprocity_max_rel = reciprocity_max_abs / denom
 
     passivity_min_eig = np.zeros(result.frequencies_hz.size, dtype=np.float64)
+    passivity_min_eig_reciprocal = np.zeros(
+        result.frequencies_hz.size,
+        dtype=np.float64,
+    )
+    passivity_scale = np.zeros(result.frequencies_hz.size, dtype=np.float64)
     for idx, z in enumerate(matrix):
         hermitian_part = 0.5 * (z + z.conj().T)
         passivity_min_eig[idx] = float(np.min(np.linalg.eigvalsh(hermitian_part)))
-    passivity_ok = passivity_min_eig >= -float(passivity_tol)
+        reciprocal_part = 0.5 * (z + z.T)
+        reciprocal_hermitian = reciprocal_part.real
+        passivity_min_eig_reciprocal[idx] = float(
+            np.min(np.linalg.eigvalsh(reciprocal_hermitian))
+        )
+        passivity_scale[idx] = float(np.linalg.norm(reciprocal_hermitian, ord=2))
+    passivity_ok = passivity_min_eig_reciprocal >= -(
+        passivity_atol + passivity_relative * passivity_scale
+    )
 
     low_ka_self_impedance: dict[str, NDArray[np.complex128]] = {}
     low_ka_self_impedance_rel_error: dict[str, NDArray[np.float64]] = {}
@@ -528,6 +560,7 @@ def matrix_diagnostics(
         reciprocity_max_abs=reciprocity_max_abs,
         reciprocity_max_rel=reciprocity_max_rel,
         passivity_min_eig=passivity_min_eig,
+        passivity_min_eig_reciprocal=passivity_min_eig_reciprocal,
         passivity_ok=passivity_ok,
         low_ka_self_impedance=low_ka_self_impedance,
         low_ka_self_impedance_rel_error=low_ka_self_impedance_rel_error,

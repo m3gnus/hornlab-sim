@@ -356,7 +356,72 @@ def test_matrix_diagnostics_passivity_uses_full_hermitian_part():
     diagnostics = radiation_impedance.matrix_diagnostics(result)
 
     assert diagnostics.passivity_min_eig[0] == pytest.approx(-1.0)
+    assert diagnostics.passivity_min_eig_reciprocal[0] == pytest.approx(1.0)
+    # The raw failure is caused entirely by non-reciprocity. The projected
+    # matrix remains passive, so the two failure modes are reported separately.
+    assert diagnostics.passivity_ok[0]
+
+
+def test_matrix_diagnostics_separates_subtag_scale_nonreciprocity():
+    matrix = np.eye(9, dtype=np.complex128) * (1.0 + 2.0e5j)
+    matrix[0, 1] += 400.0j
+    matrix[1, 0] -= 400.0j
+    result = radiation_impedance.RadiationImpedanceResult(
+        frequencies_hz=np.array([500.0]),
+        aperture_names=[f"subtag_{idx}" for idx in range(9)],
+        aperture_area_m2={f"subtag_{idx}": 1.0 for idx in range(9)},
+        impedance_matrix=matrix[None, :, :],
+        solver_logs=[],
+    )
+
+    diagnostics = radiation_impedance.matrix_diagnostics(result)
+
+    assert diagnostics.reciprocity_max_rel[0] == pytest.approx(0.004)
+    assert diagnostics.passivity_min_eig[0] == pytest.approx(-399.0)
+    assert diagnostics.passivity_min_eig_reciprocal[0] == pytest.approx(1.0)
+    assert diagnostics.passivity_ok[0]
+
+
+def test_matrix_diagnostics_reciprocal_loss_remains_nonpassive():
+    result = radiation_impedance.RadiationImpedanceResult(
+        frequencies_hz=np.array([100.0]),
+        aperture_names=["a", "b"],
+        aperture_area_m2={"a": 1.0, "b": 1.0},
+        impedance_matrix=np.array(
+            [[[-1.0 + 10.0j, 0.5j], [0.5j, 1.0 + 10.0j]]],
+            dtype=np.complex128,
+        ),
+        solver_logs=[],
+    )
+
+    diagnostics = radiation_impedance.matrix_diagnostics(result)
+
+    assert diagnostics.reciprocity_max_abs[0] == pytest.approx(0.0)
+    assert diagnostics.passivity_min_eig[0] == pytest.approx(-1.0)
+    assert diagnostics.passivity_min_eig_reciprocal[0] == pytest.approx(-1.0)
     assert not diagnostics.passivity_ok[0]
+
+
+def test_matrix_diagnostics_relative_passivity_tolerance_scales_projection():
+    result = radiation_impedance.RadiationImpedanceResult(
+        frequencies_hz=np.array([100.0]),
+        aperture_names=["a", "b"],
+        aperture_area_m2={"a": 1.0, "b": 1.0},
+        impedance_matrix=np.array(
+            [[[-1.0e-6, 0.0], [0.0, 100.0]]],
+            dtype=np.complex128,
+        ),
+        solver_logs=[],
+    )
+
+    without_relative = radiation_impedance.matrix_diagnostics(result)
+    with_relative = radiation_impedance.matrix_diagnostics(
+        result,
+        passivity_rtol=1.0e-8,
+    )
+
+    assert not without_relative.passivity_ok[0]
+    assert with_relative.passivity_ok[0]
 
 
 def test_low_ka_baffled_piston_reference_scaling():
