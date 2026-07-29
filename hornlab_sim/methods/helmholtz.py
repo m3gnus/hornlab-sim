@@ -507,19 +507,27 @@ def mid_chamber_helmholtz(
     volume inversion. The empirical confined-neck mode is non-monotone in
     volume, so it is inverted numerically and returns the largest root: the
     branch connected to the large-volume, Rayleigh-like regime.
+
+    With ``mids`` supplied, ``target_fc_hz`` overrides the parameter-backed
+    target for validation and automatic target-derived volume/depth geometry.
+    Explicit chamber volume, box geometry, or cylinder-depth overrides remain
+    fixed according to the parameter object's resolver contract.
     """
     explicit_mid = mids is None
-    if mids is not None:
-        mids.driver.validate()
-        mids.port.validate()
-        mids.chamber.validate(mids.driver, mids.port, mids.target_fc_hz)
-
     if mids is None:
         port_count = 2 if port_count is None else port_count
         entry_area_cm2 = 6.0 if entry_area_cm2 is None else entry_area_cm2
         chamber_area_cm2 = 14.0 if chamber_area_cm2 is None else chamber_area_cm2
         tube_depth_mm = 24.0 if tube_depth_mm is None else tube_depth_mm
         target_fc_hz = 1200.0 if target_fc_hz is None else target_fc_hz
+    elif target_fc_hz is None:
+        target_fc_hz = mids.target_fc_hz
+    target_fc_hz = _require_finite_positive("target_fc_hz", target_fc_hz)
+
+    if mids is not None:
+        mids.driver.validate()
+        mids.port.validate()
+        mids.chamber.validate(mids.driver, mids.port, target_fc_hz)
 
     port_count = int(
         mids.port.count_per_chamber
@@ -549,12 +557,6 @@ def mid_chamber_helmholtz(
     if exit_radius_m is not None:
         exit_radius_m = _require_finite_positive("exit_radius_m", exit_radius_m)
         chamber_area_cm2 = math.pi * exit_radius_m * exit_radius_m * 1e4
-    target_fc_hz = (
-        mids.target_fc_hz
-        if target_fc_hz is None and mids is not None
-        else target_fc_hz
-    )
-    target_fc_hz = _require_finite_positive("target_fc_hz", target_fc_hz)
     A_one = entry_area_cm2 * 1e-4
     A = A_one * port_count
     A_exit_one = chamber_area_cm2 * 1e-4
@@ -600,7 +602,7 @@ def mid_chamber_helmholtz(
         chamber_volume_cc = mids.chamber.resolved_volume_cc(
             mids.driver,
             mids.port,
-            mids.target_fc_hz,
+            target_fc_hz,
         )
     elif chamber_volume_cc is None:
         if port_model == "uniform":
@@ -696,7 +698,7 @@ def mid_chamber_helmholtz(
         cylinder_depth = mids.chamber.resolved_cylinder_depth_mm(
             mids.driver,
             mids.port,
-            mids.target_fc_hz,
+            target_fc_hz,
         )
 
     return {

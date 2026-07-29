@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -13,6 +14,7 @@ from hornlab_sim.methods.helmholtz import (
 )
 from hornlab_sim.methods.port_acoustics import (
     confined_interior_end_correction,
+    end_correction,
     frustum_port_acoustic_mass,
     frustum_port_inertance_denominator,
     viscothermal_port_q,
@@ -196,6 +198,83 @@ def test_ingard_without_an_interior_end_term_is_a_rayleigh_noop(port_model):
 
     assert ingard["V_cc"] == pytest.approx(rayleigh["V_cc"])
     assert ingard["f_Hz"] == pytest.approx(rayleigh["f_Hz"])
+
+
+class _RecordingMidChamber:
+    shape = "cylinder"
+
+    def __init__(self, *, cylinder_depth_mm_override=None):
+        self.cylinder_depth_mm_override = cylinder_depth_mm_override
+        self.target_calls = []
+
+    def validate(self, driver, port, target_fc_hz):
+        self.target_calls.append(("validate", target_fc_hz))
+
+    def resolved_volume_cc(self, driver, port, target_fc_hz):
+        self.target_calls.append(("volume", target_fc_hz))
+        area_m2 = port.entry_area_cm2 * 1e-4 * port.count_per_chamber
+        effective_length_m = port.tube_depth_mm * 1e-3 + end_correction(
+            area_m2,
+            "flanged_free",
+            n_parallel=port.count_per_chamber,
+        )
+        denominator = effective_length_m / area_m2
+        omega_over_c = 2.0 * math.pi * target_fc_hz / 343.0
+        return 1.0 / (denominator * omega_over_c**2) * 1e6
+
+    def resolved_cylinder_radius_mm(self, driver):
+        return 50.0
+
+    def resolved_cylinder_depth_mm(self, driver, port, target_fc_hz):
+        self.target_calls.append(("depth", target_fc_hz))
+        if self.cylinder_depth_mm_override is not None:
+            return self.cylinder_depth_mm_override
+        volume_mm3 = self.resolved_volume_cc(driver, port, target_fc_hz) * 1000.0
+        return volume_mm3 / (math.pi * 50.0**2)
+
+
+def _recording_mids(*, cylinder_depth_mm_override=None):
+    chamber = _RecordingMidChamber(
+        cylinder_depth_mm_override=cylinder_depth_mm_override
+    )
+    mids = SimpleNamespace(
+        target_fc_hz=1200.0,
+        driver=SimpleNamespace(validate=lambda: None),
+        port=SimpleNamespace(
+            validate=lambda: None,
+            count_per_chamber=2,
+            entry_area_cm2=6.0,
+            chamber_area_cm2=14.0,
+            tube_depth_mm=24.0,
+        ),
+        chamber=chamber,
+    )
+    return mids, chamber
+
+
+@pytest.mark.parametrize(
+    ("override_hz", "expected_hz"),
+    [(None, 1200.0), (1000.0, 1000.0)],
+)
+def test_parameter_backed_mid_geometry_uses_resolved_target(
+    override_hz,
+    expected_hz,
+):
+    mids, chamber = _recording_mids()
+
+    result = mid_chamber_helmholtz(mids, target_fc_hz=override_hz)
+
+    assert {target for _, target in chamber.target_calls} == {expected_hz}
+    assert result["target_fc_hz"] == expected_hz
+    assert result["f_Hz"] == pytest.approx(expected_hz)
+
+
+def test_parameter_backed_target_override_keeps_explicit_cylinder_depth():
+    mids, _ = _recording_mids(cylinder_depth_mm_override=7.5)
+
+    result = mid_chamber_helmholtz(mids, target_fc_hz=1000.0)
+
+    assert result["cylinder_depth_mm"] == pytest.approx(7.5)
 
 
 def test_frustum_ingard_correction_uses_the_narrow_frustum_radius():
