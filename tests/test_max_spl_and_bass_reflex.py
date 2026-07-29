@@ -10,9 +10,11 @@ from hornlab_sim.methods.bass_reflex import (
     SweepConfig,
     alignment_metrics,
     ebp_hint,
+    frange,
     fval,
     port_area_for_length_m,
     row_to_driver,
+    run_screen,
 )
 from hornlab_sim.methods.max_spl import design_front_chamber, xmax_limited_spl
 
@@ -167,6 +169,57 @@ def test_bass_reflex_short_port_metrics_accept_feasible_alignment():
     assert metrics["ShortPortScore"] == pytest.approx(float(metrics["ShortPortScore"]))
     assert ebp_hint(35.0, 0.38)[1] == "vented"
     assert port_area_for_length_m(100.0, 35.0, 0.10) > 0.0
+
+
+def _sweep_config(**overrides) -> SweepConfig:
+    values = {
+        "size_in": 15.0,
+        "vb_values_l": np.array([100.0]),
+        "fb_values_hz": np.array([35.0]),
+        "port_lengths_m": np.array([0.10]),
+        "score_band": (28.0, 120.0),
+        "velocity_cap_mps": 20.0,
+        "max_equiv_diam_mm": 500.0,
+        "min_port_resonance_hz": 0.0,
+        "top_n": 5,
+    }
+    values.update(overrides)
+    return SweepConfig(**values)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("vb_values_l", np.array([])),
+        ("fb_values_hz", np.array([35.0, np.nan])),
+        ("port_lengths_m", np.array([-0.01])),
+        ("score_band", (120.0, 28.0)),
+        ("velocity_cap_mps", np.nan),
+        ("max_equiv_diam_mm", -5.0),
+        ("min_port_resonance_hz", -1.0),
+        ("top_n", 0),
+        ("top_n", 1.5),
+    ],
+)
+def test_sweep_config_rejects_degenerate_values(field, value):
+    with pytest.raises(ValueError, match=field):
+        _sweep_config(**{field: value})
+
+
+def test_frange_rejects_reversed_bounds():
+    with pytest.raises(ValueError, match="stop"):
+        frange(150.0, 50.0, 25.0)
+
+
+def test_run_screen_revalidates_mutated_config_before_writing(tmp_path):
+    config = _sweep_config()
+    config.vb_values_l[0] = np.nan
+    output_dir = tmp_path / "invalid-screen"
+
+    with pytest.raises(ValueError, match="vb_values_l"):
+        run_screen([], config, output_dir)
+
+    assert not output_dir.exists()
 
 
 @pytest.mark.parametrize("value", ["nan", "inf", "-inf", "1e999"])

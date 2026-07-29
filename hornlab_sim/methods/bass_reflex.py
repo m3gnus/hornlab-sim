@@ -22,6 +22,7 @@ from __future__ import annotations
 import csv
 import math
 from dataclasses import dataclass
+from numbers import Integral
 from pathlib import Path
 from typing import Iterable
 
@@ -49,6 +50,62 @@ class SweepConfig:
     min_port_resonance_hz: float
     top_n: int
 
+    def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self) -> None:
+        """Reject sweep settings that cannot produce a meaningful screen."""
+        for name, values, allow_zero in (
+            ("vb_values_l", self.vb_values_l, False),
+            ("fb_values_hz", self.fb_values_hz, False),
+            ("port_lengths_m", self.port_lengths_m, True),
+        ):
+            array = np.asarray(values)
+            if array.ndim != 1:
+                raise ValueError(f"{name} must be one-dimensional")
+            if array.size == 0:
+                raise ValueError(f"{name} must not be empty")
+            try:
+                finite = np.isfinite(array)
+            except TypeError as exc:
+                raise ValueError(f"{name} must contain finite numeric values") from exc
+            if not np.all(finite):
+                raise ValueError(f"{name} must contain only finite values")
+            if allow_zero:
+                if np.any(array < 0.0):
+                    raise ValueError(f"{name} must contain only non-negative values")
+            elif np.any(array <= 0.0):
+                raise ValueError(f"{name} must contain only positive values")
+
+        score_band = np.asarray(self.score_band, dtype=float)
+        if (
+            score_band.shape != (2,)
+            or not np.all(np.isfinite(score_band))
+            or not 0.0 < score_band[0] < score_band[1]
+        ):
+            raise ValueError(
+                "score_band must be a finite pair with 0 < low_hz < high_hz"
+            )
+
+        for name, value, allow_zero in (
+            ("velocity_cap_mps", self.velocity_cap_mps, False),
+            ("max_equiv_diam_mm", self.max_equiv_diam_mm, False),
+            ("min_port_resonance_hz", self.min_port_resonance_hz, True),
+        ):
+            numeric = float(value)
+            if not math.isfinite(numeric) or (
+                numeric < 0.0 if allow_zero else numeric <= 0.0
+            ):
+                qualifier = "non-negative" if allow_zero else "positive"
+                raise ValueError(f"{name} must be finite and {qualifier}")
+
+        if (
+            isinstance(self.top_n, bool)
+            or not isinstance(self.top_n, Integral)
+            or self.top_n < 1
+        ):
+            raise ValueError("top_n must be an integer of at least 1")
+
 
 def fval(row: dict[str, str], key: str, default: float = 0.0) -> float:
     try:
@@ -63,10 +120,14 @@ def sval(row: dict[str, str], key: str) -> str:
 
 
 def frange(start: float, stop: float, step: float) -> np.ndarray:
+    if not all(math.isfinite(value) for value in (start, stop, step)):
+        raise ValueError("range values must be finite")
     if step <= 0:
         raise ValueError("range step must be positive")
+    if stop < start:
+        raise ValueError("range stop must not be less than start")
     count = int(math.floor((stop - start) / step + 0.5)) + 1
-    return start + step * np.arange(max(count, 0), dtype=float)
+    return start + step * np.arange(count, dtype=float)
 
 
 def load_rows(path: Path, size_in: float | None) -> list[dict[str, str]]:
@@ -480,6 +541,7 @@ def plot_best(path: Path, rows: list[dict[str, object]], band: tuple[float, floa
 
 
 def run_screen(rows: list[dict[str, str]], config: SweepConfig, output_dir: Path) -> None:
+    config.validate()
     freq = np.logspace(
         math.log10(max(10.0, config.score_band[0] * 0.5)),
         math.log10(config.score_band[1] * 2.5),
