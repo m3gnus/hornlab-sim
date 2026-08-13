@@ -17,6 +17,11 @@ class _FakeVelocityMode:
 @dataclass
 class _FakeConfig:
     mesh_scale: float = 1.0
+    mesh_validate: bool = True
+    mesh_merge_tol: float = 1e-9
+    mesh_repair_normals: bool = False
+    native_symmetry_plane: str | None = None
+    aperture_tag: int | None = None
     velocity_mode: str = _FakeVelocityMode.ACCELERATION
     velocity_sources: dict[int, complex] = field(default_factory=dict)
 
@@ -24,7 +29,7 @@ class _FakeConfig:
 def _patch_metal_api(monkeypatch, solve_frequencies):
     api = SimpleNamespace(
         name="metal",
-        load_mesh=lambda path, scale=1.0: path,
+        load_mesh=lambda path, **kwargs: path,
         solve_frequencies=solve_frequencies,
         VelocityMode=_FakeVelocityMode,
         default_config=lambda formulation: _FakeConfig(),
@@ -58,6 +63,37 @@ def _fake_three_tag_mesh():
     grid = SimpleNamespace(vertices=vertices, elements=elements)
     physical_tags = np.array([2, 3, 4], dtype=np.int32)
     return SimpleNamespace(grid=grid, physical_tags=physical_tags)
+
+
+def test_aperture_matrix_preload_forwards_native_symmetry_plane(monkeypatch):
+    mesh = _fake_three_tag_mesh()
+    captured_load = {}
+
+    def fake_solve_frequencies(loaded, frequencies, cfg):
+        return _fake_result(
+            frequencies,
+            {2: np.array([12.0 + 0.0j])},
+        )
+
+    api = _patch_metal_api(monkeypatch, fake_solve_frequencies)
+
+    def capture_load_mesh(path, **kwargs):
+        captured_load["path"] = path
+        captured_load["kwargs"] = kwargs
+        return mesh
+
+    api.load_mesh = capture_load_mesh
+    config = _FakeConfig(native_symmetry_plane="yz")
+
+    radiation_impedance.solve_aperture_matrix(
+        "reduced-domain.msh",
+        {"driver": [2]},
+        np.array([100.0]),
+        config=config,
+    )
+
+    assert captured_load["path"] == "reduced-domain.msh"
+    assert captured_load["kwargs"]["native_symmetry_plane"] == "yz"
 
 
 def test_aperture_matrix_uses_one_basis_per_source(monkeypatch):

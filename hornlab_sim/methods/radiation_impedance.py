@@ -131,7 +131,15 @@ def solve_aperture_matrix(
         config = api.default_config(None)
 
     if isinstance(mesh, (str, Path)):
-        loaded = api.load_mesh(mesh, scale=config.mesh_scale)
+        loaded = api.load_mesh(
+            mesh,
+            scale=config.mesh_scale,
+            validate=config.mesh_validate,
+            merge_tol=config.mesh_merge_tol,
+            repair_normals=config.mesh_repair_normals,
+            native_symmetry_plane=config.native_symmetry_plane,
+            aperture_tag=config.aperture_tag,
+        )
     else:
         loaded = mesh
 
