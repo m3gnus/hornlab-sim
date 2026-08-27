@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hornlab-sim"
-version = "0.1.0"
+version = "0.1.1"
 description = "Canonical lumped (LEM/TMM/Helmholtz) and LEM-BEM coupling simulators for HornLab"
 requires-python = ">=3.10"
 license = { text = "AGPL-3.0-or-later" }
