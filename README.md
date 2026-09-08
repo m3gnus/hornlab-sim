@@ -43,6 +43,12 @@ For LEM→BEM coupling, suppress LEM-side external radiation loading on any
 BEM-radiated aperture. Use `end_corr="none"` with Helmholtz helpers and
 `Port(..., radiation_external=False)` with bandpass ports.
 
+`lem_to_bem.solve` takes engineering `e^{+j*omega*t}` volume velocities by
+default and converts them once to the solver's `e^{-i*omega*t}` convention.
+A caller that already holds solver-convention source phasors must say so with
+`velocity_convention="solver"`; passing them as the default conjugates them a
+second time and reverses the complex source phase.
+
 ## License
 
 AGPL-3.0-or-later

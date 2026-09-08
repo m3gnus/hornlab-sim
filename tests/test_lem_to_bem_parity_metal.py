@@ -46,6 +46,8 @@ def test_multi_aperture_superposition_matches_per_frequency_metal_loop():
         aperture_tags = {"left": [2], "right": [3]}
         areas = _aperture_face_areas(loaded, aperture_tags)
 
+        # Engineering (e^{+jwt}) normal velocities, deliberately complex so
+        # the time-convention conversion is observable against a real solve.
         velocity_left = np.array([0.123 + 0.04j, -0.07 + 0.11j])
         velocity_right = np.array([-0.08 + 0.03j, 0.09 - 0.05j])
 
@@ -60,14 +62,16 @@ def test_multi_aperture_superposition_matches_per_frequency_metal_loop():
             config=config,
         )
 
+        # The direct reference imposes solver-convention (e^{-iwt}) sources,
+        # so the engineering velocities above are conjugated exactly once.
         direct_results = []
         for index, frequency in enumerate(freqs):
             direct_config = replace(
                 config,
                 velocity_mode=VelocityMode.VELOCITY,
                 velocity_sources={
-                    2: complex(velocity_left[index]),
-                    3: complex(velocity_right[index]),
+                    2: complex(np.conjugate(velocity_left[index])),
+                    3: complex(np.conjugate(velocity_right[index])),
                 },
             )
             direct_results.append(
@@ -126,6 +130,46 @@ def test_multi_aperture_superposition_matches_per_frequency_metal_loop():
                     f"Metal BEM for tag {tag}"
                 ),
             )
+
+        # Declaring the already-conjugated values as solver convention must
+        # reach the identical boundary data: the wrapper converts once, and
+        # only when it is told the input is engineering.
+        result_solver_convention = lem_to_bem.solve(
+            mesh=loaded,
+            lem_velocities={
+                "left": areas["left"] * np.conjugate(velocity_left),
+                "right": areas["right"] * np.conjugate(velocity_right),
+            },
+            aperture_tags=aperture_tags,
+            frequencies_hz=freqs,
+            config=config,
+            velocity_convention="solver",
+        )
+        np.testing.assert_allclose(
+            result_solver_convention.pressure_complex,
+            result_coupled.pressure_complex,
+            rtol=1e-4,
+            atol=1e-8,
+            err_msg=(
+                "velocity_convention='solver' must impose the same boundary "
+                "data as the conjugated engineering input"
+            ),
+        )
+        applied_engineering = result_coupled.solver_log[-1]["lem_to_bem"]
+        applied_solver = result_solver_convention.solver_log[-1]["lem_to_bem"]
+        for index in range(freqs.size):
+            assert applied_engineering[index]["velocity_convention"] == "engineering"
+            assert applied_solver[index]["velocity_convention"] == "solver"
+            for name, engineering in (
+                ("left", velocity_left[index]),
+                ("right", velocity_right[index]),
+            ):
+                assert applied_engineering[index]["v_n_per_aperture"][
+                    name
+                ] == pytest.approx(complex(np.conjugate(engineering)))
+                assert applied_solver[index]["v_n_per_aperture"][
+                    name
+                ] == pytest.approx(complex(np.conjugate(engineering)))
 
 
 def _build_two_source_box(path: Path, side_m: float, elem_size_m: float) -> None:

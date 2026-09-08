@@ -250,8 +250,13 @@ def test_area_mismatch_warns_but_does_not_throw(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_velocity_sources_dict_captures_complex_u_over_area(monkeypatch):
-    """For one frequency with one aperture, v_n = U / A and is complex."""
+def test_engineering_velocity_sources_are_conjugated_once(monkeypatch):
+    """Engineering ``U/A`` reaches the solver as ``conj(U/A)``.
+
+    The LEM/TMM methods in this package are ``e^{+jwt}``; Metal is
+    ``e^{-iwt}``. The conversion between the two is exactly one complex
+    conjugation, applied here and nowhere else.
+    """
     mesh = _fake_unit_square_mesh()
     captured = []
 
@@ -262,8 +267,8 @@ def test_velocity_sources_dict_captures_complex_u_over_area(monkeypatch):
     _patch_metal_api(monkeypatch, fake_solve_frequencies)
 
     freqs = np.array([200.0, 500.0])
-    U = np.array([3.0 + 4.0j, 1.0 - 1.0j])  # m^3/s
-    lem_to_bem.solve(
+    U = np.array([3.0 + 4.0j, 1.0 - 1.0j])  # m^3/s, engineering convention
+    result = lem_to_bem.solve(
         mesh=mesh,
         lem_velocities={"tri_a": U},
         aperture_tags={"tri_a": [2]},  # tag 2 has area 0.5 m^2
@@ -272,10 +277,225 @@ def test_velocity_sources_dict_captures_complex_u_over_area(monkeypatch):
 
     # Two single-freq calls
     assert len(captured) == 2
-    # v_n at f=200: (3+4j) / 0.5 = 6+8j
-    assert captured[0]["sources"][2] == pytest.approx(6.0 + 8.0j)
-    # v_n at f=500: (1-1j) / 0.5 = 2-2j
-    assert captured[1]["sources"][2] == pytest.approx(2.0 - 2.0j)
+    # engineering v_n at f=200 is (3+4j)/0.5 = 6+8j -> solver 6-8j
+    assert captured[0]["sources"][2] == pytest.approx(6.0 - 8.0j)
+    # engineering v_n at f=500 is (1-1j)/0.5 = 2-2j -> solver 2+2j
+    assert captured[1]["sources"][2] == pytest.approx(2.0 + 2.0j)
+
+    # The log records the convention declared and the value actually imposed.
+    log = result.solver_log[-1]["lem_to_bem"]
+    assert [entry["velocity_convention"] for entry in log] == [
+        "engineering",
+        "engineering",
+    ]
+    assert log[0]["v_n_per_aperture"]["tri_a"] == pytest.approx(6.0 - 8.0j)
+    assert log[1]["v_n_per_aperture"]["tri_a"] == pytest.approx(2.0 + 2.0j)
+
+
+def test_solver_convention_velocity_sources_pass_through_unchanged(monkeypatch):
+    """``velocity_convention="solver"`` must not conjugate a second time."""
+    mesh = _fake_unit_square_mesh()
+    captured = []
+
+    def fake_solve_frequencies(loaded, freqs, cfg):
+        captured.append(dict(cfg.velocity_sources))
+        return _fake_solve_result(freqs=freqs)
+
+    _patch_metal_api(monkeypatch, fake_solve_frequencies)
+
+    freqs = np.array([200.0, 500.0])
+    U = np.array([3.0 + 4.0j, 1.0 - 1.0j])
+    result = lem_to_bem.solve(
+        mesh=mesh,
+        lem_velocities={"tri_a": U},
+        aperture_tags={"tri_a": [2]},
+        frequencies_hz=freqs,
+        velocity_convention="solver",
+    )
+
+    assert captured[0][2] == pytest.approx(6.0 + 8.0j)
+    assert captured[1][2] == pytest.approx(2.0 - 2.0j)
+    log = result.solver_log[-1]["lem_to_bem"]
+    assert log[0]["velocity_convention"] == "solver"
+    assert log[0]["v_n_per_aperture"]["tri_a"] == pytest.approx(6.0 + 8.0j)
+
+
+def test_unknown_velocity_convention_raises():
+    with pytest.raises(ValueError, match="velocity_convention must be one of"):
+        lem_to_bem.solve(
+            mesh="dummy.msh",
+            lem_velocities={"tri_a": np.ones(1, dtype=complex)},
+            aperture_tags={"tri_a": [2]},
+            frequencies_hz=np.array([100.0]),
+            velocity_convention="physics",
+        )
+
+
+def test_real_velocities_are_identical_in_both_conventions(monkeypatch):
+    """Real-valued sources are convention-invariant, so parity fixtures hold."""
+    mesh = _fake_unit_square_mesh()
+    captured = []
+
+    def fake_solve_frequencies(loaded, freqs, cfg):
+        captured.append(dict(cfg.velocity_sources))
+        return _fake_solve_result(freqs=freqs)
+
+    _patch_metal_api(monkeypatch, fake_solve_frequencies)
+
+    freqs = np.array([100.0])
+    U = np.array([0.05 + 0.0j])
+    for convention in ("engineering", "solver"):
+        lem_to_bem.solve(
+            mesh=mesh,
+            lem_velocities={"tri_a": U},
+            aperture_tags={"tri_a": [2]},
+            frequencies_hz=freqs,
+            velocity_convention=convention,
+        )
+    assert captured[0] == captured[1]
+    assert captured[0][2] == pytest.approx(0.1 + 0.0j)
+
+
+def _phase_fixture_api(monkeypatch, *, multi_source):
+    """Patch the Metal API with a linear two-aperture transfer H = [1, i].
+
+    Solver-convention pressure is ``v_2 + i*v_3`` at every frequency and
+    observation point, so engineering ``U`` of ``[0.5, -0.5j]`` over two
+    ``0.5 m^2`` faces must cancel exactly.
+    """
+    captured = []
+
+    def _pressure_for(sources, freqs):
+        value = complex(sources.get(2, 0.0)) + 1j * complex(sources.get(3, 0.0))
+        result = _fake_solve_result(freqs=list(freqs))
+        result.pressure_complex[:] = value
+        result.impedance[:] = value
+        result.solver_log = [
+            {"frequency_hz": float(f), "timing_s": 0.0, "field_s": 0.0}
+            for f in np.asarray(freqs, dtype=np.float64)
+        ]
+        return result
+
+    def fake_solve_frequencies(loaded, freqs, cfg):
+        captured.append(dict(cfg.velocity_sources))
+        return _pressure_for(cfg.velocity_sources, freqs)
+
+    api = _patch_metal_api(monkeypatch, fake_solve_frequencies)
+    if multi_source:
+
+        def fake_solve_multi_source(loaded, freqs, source_dicts, cfg):
+            captured.extend(dict(s) for s in source_dicts)
+            return [_pressure_for(sources, freqs) for sources in source_dicts]
+
+        api.solve_multi_source = fake_solve_multi_source
+    return captured
+
+
+@pytest.mark.parametrize("multi_source", [False, True], ids=["sequential", "basis"])
+def test_two_aperture_engineering_phase_cancels(monkeypatch, multi_source):
+    """The NUM-1 acceptance case: engineering sources must cancel, not add.
+
+    With solver transfer coefficients ``[1, i]``, areas ``[0.5, 0.5]`` and
+    engineering volume velocities ``[0.5, -0.5j]``, the solver-convention
+    normal velocities are ``[1, i]`` and the summed pressure is
+    ``1*1 + i*i = 0``. Applying ``U/A`` unconverted gives ``2+0j``.
+    """
+    _phase_fixture_api(monkeypatch, multi_source=multi_source)
+    mesh = _fake_unit_square_mesh()
+
+    result = lem_to_bem.solve(
+        mesh=mesh,
+        lem_velocities={"a": np.array([0.5 + 0.0j]), "b": np.array([-0.5j])},
+        aperture_tags={"a": [2], "b": [3]},
+        frequencies_hz=np.array([100.0]),
+    )
+
+    assert complex(result.pressure_complex[0, 0, 0]) == pytest.approx(0.0 + 0.0j)
+
+
+@pytest.mark.parametrize("multi_source", [False, True], ids=["sequential", "basis"])
+def test_two_aperture_solver_convention_still_adds(monkeypatch, multi_source):
+    """The same numbers declared as solver convention keep the old sum."""
+    _phase_fixture_api(monkeypatch, multi_source=multi_source)
+    mesh = _fake_unit_square_mesh()
+
+    result = lem_to_bem.solve(
+        mesh=mesh,
+        lem_velocities={"a": np.array([0.5 + 0.0j]), "b": np.array([-0.5j])},
+        aperture_tags={"a": [2], "b": [3]},
+        frequencies_hz=np.array([100.0]),
+        velocity_convention="solver",
+    )
+
+    assert complex(result.pressure_complex[0, 0, 0]) == pytest.approx(2.0 + 0.0j)
+
+
+@pytest.mark.parametrize("multi_source", [False, True], ids=["sequential", "basis"])
+def test_pure_delay_phase_advances_the_right_way(monkeypatch, multi_source):
+    """A pure engineering delay must not read as a phase advance.
+
+    An engineering source delayed by ``tau`` carries ``exp(-j*w*tau)``. In the
+    solver's ``e^{-iwt}`` convention the same delay is ``exp(+i*w*tau)``, so
+    the imposed normal velocity must gain, not lose, phase.
+    """
+    _phase_fixture_api(monkeypatch, multi_source=multi_source)
+    mesh = _fake_unit_square_mesh()
+
+    freqs = np.array([100.0, 400.0])
+    tau = 1.0e-3
+    omega = 2.0 * np.pi * freqs
+    # A single aperture over both tags: area 1.0 m^2, so v_n == U.
+    U = np.exp(-1j * omega * tau)
+
+    result = lem_to_bem.solve(
+        mesh=mesh,
+        lem_velocities={"delayed": U},
+        aperture_tags={"delayed": [2, 3]},
+        frequencies_hz=freqs,
+    )
+
+    applied = np.array(
+        [
+            entry["v_n_per_aperture"]["delayed"]
+            for entry in result.solver_log[-1]["lem_to_bem"]
+        ]
+    )
+    np.testing.assert_allclose(applied, np.exp(1j * omega * tau), atol=1e-12)
+    np.testing.assert_allclose(np.angle(applied), omega * tau, atol=1e-12)
+
+
+def test_basis_and_sequential_paths_agree_under_conjugation(monkeypatch):
+    """Both execution paths must convert exactly once, and identically."""
+    mesh = _fake_unit_square_mesh()
+    freqs = np.array([100.0, 250.0])
+    velocities = {
+        "a": np.array([0.5 + 0.2j, -0.3 + 0.4j]),
+        "b": np.array([-0.2 + 0.6j, 0.8 - 0.5j]),
+    }
+    tags = {"a": [2], "b": [3]}
+
+    sequential_sources = _phase_fixture_api(monkeypatch, multi_source=False)
+    sequential = lem_to_bem.solve(mesh, velocities, tags, freqs)
+
+    basis_sources = _phase_fixture_api(monkeypatch, multi_source=True)
+    basis = lem_to_bem.solve(mesh, velocities, tags, freqs)
+
+    np.testing.assert_allclose(
+        basis.pressure_complex,
+        sequential.pressure_complex,
+        rtol=1e-13,
+        atol=1e-13,
+    )
+    # Sequential imposes conj(U/A) directly; the basis path drives unit
+    # sources and folds the same conjugated weights into the combination.
+    expected = np.conjugate(
+        np.array([velocities["a"] / 0.5, velocities["b"] / 0.5]).T
+    )
+    assert sequential_sources[0][2] == pytest.approx(expected[0, 0])
+    assert sequential_sources[0][3] == pytest.approx(expected[0, 1])
+    assert basis_sources[0] == {2: 1.0 + 0.0j, 3: 0.0 + 0.0j}
+    assert basis.config.velocity_sources[2] == pytest.approx(expected[0, 0])
+    assert basis.config.velocity_sources[3] == pytest.approx(expected[0, 1])
 
 
 def test_multi_tag_aperture_applies_same_vn_to_each_tag(monkeypatch):

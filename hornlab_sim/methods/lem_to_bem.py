@@ -40,9 +40,25 @@ Acoustic engineering rules — these are load-bearing, see
    actual velocity directly. Physically equivalent to passing
    ``j·omega·v`` in ``ACCELERATION`` mode.
 
-5. **Phase reference.** All LEM aperture velocities share a common
-   excitation reference (driver terminal voltage). The ``+i·omega·rho·v_n``
-   Neumann data convention here matches the canonical Metal sign convention.
+5. **Phase reference and time convention.** All LEM aperture velocities share
+   a common excitation reference (driver terminal voltage), but a shared
+   reference is *not* a shared time convention. This package's LEM/TMM
+   methods are engineering ``e^{+j*omega*t}`` (``s = +j*omega``), while the
+   Metal solver is physics ``e^{-i*omega*t}`` with an outgoing
+   ``exp(+i*k*r)`` kernel. The two phasor conventions are related by complex
+   conjugation, so an engineering volume velocity MUST be conjugated once
+   before it becomes solver-convention Neumann data. ``solve`` does that
+   conversion itself, controlled by ``velocity_convention``; the reverse
+   boundary is ``radiation_impedance.termination_load_from_solver_matrix``.
+
+Cross-repository counterpart (GIT-WORKFLOW.md section 5)
+--------------------------------------------------------
+``velocity_convention="engineering"`` is the default because the documented
+input of this API is LEM/TMM volume velocity. Any consumer that already
+converted its source phasors to solver convention before calling ``solve``
+must now pass ``velocity_convention="solver"``, otherwise the conversion is
+applied twice and the complex source phase is reversed. The counterpart
+obligation is recorded in this package's ``AGENTS.md`` and ``README.md``.
 """
 
 from __future__ import annotations
@@ -63,6 +79,14 @@ if TYPE_CHECKING:
 MeshLike = Union[str, Path, "LoadedMesh", Any]
 METAL_EXTRA_INSTALL_HINT = 'pip install "hornlab-sim[metal]"'
 
+#: Accepted values for ``solve(velocity_convention=...)``.
+#:
+#: ``"engineering"``  ``e^{+j*omega*t}`` phasors, as emitted by this
+#:                    package's LEM/TMM methods. Conjugated once before use.
+#: ``"solver"``       ``e^{-i*omega*t}`` phasors, already in the Metal
+#:                    solver's convention. Applied unchanged.
+VELOCITY_CONVENTIONS = ("engineering", "solver")
+
 
 def solve(
     mesh: MeshLike,
@@ -72,6 +96,7 @@ def solve(
     config: Any | None = None,
     *,
     area_tolerance: float = 0.05,
+    velocity_convention: str = "engineering",
 ) -> Any:
     """Solve BEM with LEM-derived complex velocity sources per aperture.
 
@@ -81,7 +106,8 @@ def solve(
         Mesh with physical groups matching every value in ``aperture_tags``.
     lem_velocities : dict[str, complex array]
         Per-aperture complex volume velocity ``U(f)`` in m^3/s. Each value
-        must be a 1-D array of length ``len(frequencies_hz)``.
+        must be a 1-D array of length ``len(frequencies_hz)``. Interpreted
+        in the time convention named by ``velocity_convention``.
     aperture_tags : dict[str, list[int]]
         Per-aperture list of physical group IDs for the BEM mesh faces that
         belong to that aperture. Multi-tag aware (one slot may produce
@@ -98,20 +124,39 @@ def solve(
         spread is measured between apertures; useful for catching a
         miscoded tag list. No threshold check is performed against any
         LEM-assumed S (the LEM passes its U directly).
+    velocity_convention : {"engineering", "solver"}, default "engineering"
+        Time convention of ``lem_velocities``.
+
+        ``"engineering"`` means ``e^{+j*omega*t}`` phasors, which is what
+        every LEM/TMM method in this package emits. They are converted once
+        to the solver's ``e^{-i*omega*t}`` convention by complex conjugation
+        before either execution path builds a Neumann source, so a caller
+        that follows the documented API needs no conversion of its own.
+
+        ``"solver"`` means the caller already supplies ``e^{-i*omega*t}``
+        phasors; they are applied unchanged. Use it only when the values
+        were produced by, or already converted for, the BEM solver — passing
+        engineering phasors here reverses the complex source phase and turns
+        destructive multi-aperture interference into constructive.
+
+        Real-valued velocities are identical in both conventions.
 
     Returns
     -------
     SolveResult
         Metal SolveResult with complex pressure of shape
         ``(n_freq, n_planes, n_angles)``. The per-aperture v_n applied at
-        each frequency is recorded in ``result.solver_log``.
+        each frequency is recorded in ``result.solver_log``, in the solver
+        convention actually imposed on the mesh, alongside the
+        ``velocity_convention`` the caller declared for its inputs.
 
     Raises
     ------
     ValueError
         Aperture name mismatch between ``lem_velocities`` and
         ``aperture_tags``, velocity array shape mismatch with frequencies,
-        overlapping physical tags, or zero-area aperture.
+        overlapping physical tags, zero-area aperture, or an unknown
+        ``velocity_convention``.
 
     Notes
     -----
@@ -123,6 +168,12 @@ def solve(
     must be preserved, use the original per-frequency solve loop.
     """
     # ----- Validate input shapes / names ----------------------------------
+
+    if velocity_convention not in VELOCITY_CONVENTIONS:
+        raise ValueError(
+            f"velocity_convention must be one of {list(VELOCITY_CONVENTIONS)}, "
+            f"got {velocity_convention!r}"
+        )
 
     freqs = np.asarray(frequencies_hz, dtype=np.float64)
     n_freq = freqs.size
@@ -204,16 +255,22 @@ def solve(
     aperture_indices = {
         name: index for index, name in enumerate(aperture_names)
     }
-    velocity_weights = np.column_stack(
+    # One conversion point for both execution paths: U/A in the caller's
+    # declared convention, then a single conversion into the solver's
+    # e^{-i*omega*t} convention. Conjugating here rather than in each branch
+    # is what keeps the basis and sequential paths bitwise consistent.
+    input_weights = np.column_stack(
         [
             np.asarray(lem_velocities[name], dtype=np.complex128)
             / aperture_area_m2[name]
             for name in aperture_names
         ]
     )
+    velocity_weights = _to_solver_convention(input_weights, velocity_convention)
     per_freq_log = [
         {
             "frequency_hz": float(frequency),
+            "velocity_convention": velocity_convention,
             "v_n_per_aperture": {
                 name: complex(weight)
                 for name, weight in zip(aperture_names, frequency_weights)
@@ -259,9 +316,8 @@ def solve(
         for index, frequency in enumerate(freqs):
             sources: dict[int, complex] = {}
             for name, tags in aperture_tags.items():
-                velocity = (
-                    complex(lem_velocities[name][index])
-                    / aperture_area_m2[name]
+                velocity = complex(
+                    velocity_weights[index, aperture_indices[name]]
                 )
                 for tag in tags:
                     sources[int(tag)] = velocity
@@ -279,6 +335,29 @@ def solve(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _to_solver_convention(
+    weights: NDArray[np.complex128],
+    velocity_convention: str,
+) -> NDArray[np.complex128]:
+    """Return ``weights`` as ``e^{-i*omega*t}`` solver-convention phasors.
+
+    An engineering phasor ``X`` stands for ``Re{X e^{+j*omega*t}}``, which is
+    the same real signal as ``Re{conj(X) e^{-i*omega*t}}``. The conversion
+    between the two conventions is therefore exactly complex conjugation, and
+    it is an involution: ``termination_load_from_solver_matrix`` applies the
+    same operation on the return boundary.
+    """
+    array = np.asarray(weights, dtype=np.complex128)
+    if velocity_convention == "engineering":
+        return np.conjugate(array)
+    if velocity_convention == "solver":
+        return array
+    raise ValueError(
+        f"velocity_convention must be one of {list(VELOCITY_CONVENTIONS)}, "
+        f"got {velocity_convention!r}"
+    )
 
 
 def _aperture_face_areas(

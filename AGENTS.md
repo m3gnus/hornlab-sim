@@ -34,6 +34,11 @@ package limited to reusable physics methods.
 - **Reduced FEM/BEM uses 1.2041 kg/m^3 on both sides.** `acoustic_fem` matches
   the canonical Metal BEM density. The validated legacy LEM/TMM/Helmholtz
   methods intentionally retain their pinned 1.21 kg/m^3 defaults.
+- **The forward LEM→BEM boundary has an explicit convention seam.**
+  `lem_to_bem.solve(velocity_convention=...)` declares the time convention of
+  the supplied volume velocities. The default `"engineering"` conjugates
+  `U/A` once into the solver's `e^{-iωt}` convention; `"solver"` applies it
+  unchanged. See LEM↔BEM coupling rule 6 for the consumer obligation.
 - **Reduced exterior matrices have an explicit convention seam.**
   `radiation_impedance.solve_aperture_matrix` returns the conjugated Metal
   solver convention. Before passing that matrix to
@@ -52,6 +57,7 @@ When using `hornlab_sim.methods.lem_to_bem`:
 3. **Area mismatch is a warning, not an error.** Sum of BEM face areas vs LEM-assumed S can disagree up to ~5% from mesh discretization. Warn, log to result metadata, continue.
 4. **Velocity vs acceleration mode.** Canonical solver default is `velocity_mode=ACCELERATION`. LEM emits volume velocity U. The coupling layer converts U → v_n and lets the solver apply jω. Don't pass acceleration directly.
 5. **Phase reference.** All LEM aperture velocities share an excitation reference (driver terminal voltage). Mesh-side BCs must use the same complex sign convention. The +iωρv convention matches `hornlab_metal_bem` canonical settings.
+6. **Time convention at the forward boundary.** A shared excitation reference is not a shared *time* convention. This package's LEM/TMM methods are engineering `e^{+jωt}` (`s = +jω`); the Metal solver is `e^{-iωt}` with an outgoing `exp(+ikr)` kernel, so an engineering source phasor must be conjugated once on the way in. `lem_to_bem.solve` does that itself: `velocity_convention="engineering"` (the default) conjugates `U/A` before either the basis or the sequential path builds a Neumann source, and `velocity_convention="solver"` applies the values unchanged. **Consumer obligation:** a caller that already converted its source phasors to solver convention must pass `velocity_convention="solver"`, or the conversion is applied twice and destructive multi-aperture interference becomes constructive. Real-valued velocities are identical in both conventions. This is the forward counterpart of the return-boundary seam below (`termination_load_from_solver_matrix`), and both sides are the same `conj` involution.
 
 For project validation plots, prefer a project adapter over calling this
 generic solver-level coupling directly when the project owns a specific
