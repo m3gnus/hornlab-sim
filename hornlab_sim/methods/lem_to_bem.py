@@ -87,6 +87,13 @@ METAL_EXTRA_INSTALL_HINT = 'pip install "hornlab-sim[metal]"'
 #:                    solver's convention. Applied unchanged.
 VELOCITY_CONVENTIONS = ("engineering", "solver")
 
+#: Accepted values for ``mesh_array_layout``.
+#:
+#: ``"columns"``  Bempp/``PureGrid`` layout: ``vertices`` is
+#:                ``(3, n_vertices)`` and ``elements`` is ``(3, n_elements)``.
+#: ``"rows"``     ``(n_vertices, 3)`` and ``(n_elements, 3)``.
+MESH_ARRAY_LAYOUTS = ("rows", "columns")
+
 
 def solve(
     mesh: MeshLike,
@@ -97,6 +104,7 @@ def solve(
     *,
     area_tolerance: float = 0.05,
     velocity_convention: str = "engineering",
+    mesh_array_layout: str | None = None,
 ) -> Any:
     """Solve BEM with LEM-derived complex velocity sources per aperture.
 
@@ -140,6 +148,14 @@ def solve(
         destructive multi-aperture interference into constructive.
 
         Real-valued velocities are identical in both conventions.
+    mesh_array_layout : {"rows", "columns"}, optional
+        Layout of ``mesh.grid.vertices`` / ``mesh.grid.elements``.
+        ``"columns"`` is the canonical Bempp/``PureGrid`` layout,
+        ``(3, n_vertices)`` and ``(3, n_elements)``; ``"rows"`` is
+        ``(n_vertices, 3)`` and ``(n_elements, 3)``. Leave it ``None`` for
+        ordinary meshes, where the layout is settled by the array shapes or
+        by the per-element areas the grid carries. It is required only for a
+        grid whose arrays are exactly ``(3, 3)``, which is ambiguous.
 
     Returns
     -------
@@ -226,7 +242,9 @@ def solve(
 
     # ----- Compute aperture face areas -----------------------------------
 
-    aperture_area_m2 = _aperture_face_areas(loaded, aperture_tags)
+    aperture_area_m2 = _aperture_face_areas(
+        loaded, aperture_tags, mesh_array_layout=mesh_array_layout
+    )
 
     # Diagnostic: warn if apertures disagree wildly on area. This catches
     # most miscoded tag lists (e.g. wall vs exit confusion) without forcing
@@ -363,9 +381,11 @@ def _to_solver_convention(
 def _aperture_face_areas(
     loaded: "LoadedMesh",
     aperture_tags: Mapping[str, list[int]],
+    *,
+    mesh_array_layout: str | None = None,
 ) -> dict[str, float]:
     """Return total face area in m^2 per aperture name."""
-    tri_areas = _triangle_face_areas(loaded)
+    tri_areas = _triangle_face_areas(loaded, mesh_array_layout=mesh_array_layout)
     tags = loaded.physical_tags
 
     result: dict[str, float] = {}
@@ -387,23 +407,145 @@ def _aperture_face_areas(
     return result
 
 
-def _triangle_face_areas(loaded: "LoadedMesh") -> NDArray[np.float64]:
-    """Return the area of every triangular mesh face in m^2."""
-    grid = loaded.grid
+def _triangle_face_areas(
+    loaded: "LoadedMesh",
+    *,
+    mesh_array_layout: str | None = None,
+) -> NDArray[np.float64]:
+    """Return the area of every triangular mesh face in m^2.
 
-    # Some mesh loaders expose vertices/elements transposed. Normalize to
-    # row-major arrays before computing triangle areas.
-    vertices = np.asarray(grid.vertices)
-    if vertices.shape[0] == 3 and vertices.shape[1] != 3:
-        vertices = vertices.T
+    Two array layouts are in use. ``hornlab_metal_bem.mesh.PureGrid`` is
+    Bempp-shaped: ``vertices`` is ``(3, n_vertices)`` and ``elements`` is
+    ``(3, n_elements)``, triangles in columns. Convenience/test grids are
+    often row-major, ``(n_vertices, 3)`` and ``(n_elements, 3)``.
+
+    A ``(3, 3)`` array satisfies both, so the layout is not recoverable from
+    the shape for a three-element or three-vertex mesh. This helper therefore
+    never guesses at that shape. It resolves the layout, in order, from an
+    explicit ``mesh_array_layout``, from a layout the grid declares itself,
+    from authoritative per-element areas the grid already carries
+    (``PureGrid.volumes``), and only then from an unambiguous shape. If none
+    of those apply it raises rather than picking one.
+    """
+    grid = loaded.grid
+    layout = _resolve_mesh_array_layout(mesh_array_layout, grid)
+
+    if layout is None:
+        areas = _declared_element_areas(loaded)
+        if areas is not None:
+            return areas
+        raise ValueError(
+            "Cannot determine the mesh array layout: grid.vertices has shape "
+            f"{np.asarray(grid.vertices).shape} and grid.elements has shape "
+            f"{np.asarray(grid.elements).shape}, which is valid both as "
+            "(3, n) with triangles in columns (the canonical Bempp/PureGrid "
+            "layout) and as (n, 3) with triangles in rows. The grid carries "
+            "no per-element areas to settle it. Pass "
+            "mesh_array_layout='columns' or 'rows', or supply a grid that "
+            "declares its layout."
+        )
+
+    vertices = np.asarray(grid.vertices, dtype=np.float64)
     elements = np.asarray(grid.elements)
-    if elements.shape[0] == 3 and elements.shape[1] != 3:
+    if layout == "columns":
+        vertices = vertices.T
         elements = elements.T
+    _check_triangle_arrays(vertices, elements, layout)
 
     p0 = vertices[elements[:, 0]]
     p1 = vertices[elements[:, 1]]
     p2 = vertices[elements[:, 2]]
     return 0.5 * np.linalg.norm(np.cross(p1 - p0, p2 - p0), axis=1)
+
+
+def _resolve_mesh_array_layout(mesh_array_layout: str | None, grid: Any) -> str | None:
+    """Return ``"rows"``, ``"columns"``, or ``None`` when still ambiguous."""
+    if mesh_array_layout is not None:
+        if mesh_array_layout not in MESH_ARRAY_LAYOUTS:
+            raise ValueError(
+                "mesh_array_layout must be one of "
+                f"{list(MESH_ARRAY_LAYOUTS)} or None, got {mesh_array_layout!r}"
+            )
+        return mesh_array_layout
+
+    declared = getattr(grid, "array_layout", None)
+    if declared is not None:
+        if declared not in MESH_ARRAY_LAYOUTS:
+            raise ValueError(
+                f"grid declares array_layout={declared!r}; expected one of "
+                f"{list(MESH_ARRAY_LAYOUTS)}"
+            )
+        return declared
+
+    vertex_layout = _layout_from_shape(np.asarray(grid.vertices).shape)
+    element_layout = _layout_from_shape(np.asarray(grid.elements).shape)
+    if vertex_layout is not None and element_layout is not None:
+        if vertex_layout != element_layout:
+            raise ValueError(
+                f"grid.vertices implies a {vertex_layout!r} layout while "
+                f"grid.elements implies {element_layout!r}; pass an explicit "
+                "mesh_array_layout"
+            )
+        return vertex_layout
+    # One array may still settle both: the two are always stored alike.
+    return vertex_layout if vertex_layout is not None else element_layout
+
+
+def _layout_from_shape(shape: tuple[int, ...]) -> str | None:
+    if len(shape) != 2:
+        raise ValueError(
+            f"expected a 2-D vertex/element array, got shape {shape}"
+        )
+    rows, columns = shape
+    if columns == 3 and rows != 3:
+        return "rows"
+    if rows == 3 and columns != 3:
+        return "columns"
+    return None
+
+
+def _declared_element_areas(loaded: "LoadedMesh") -> NDArray[np.float64] | None:
+    """Return authoritative per-element areas the grid already carries.
+
+    ``PureGrid.volumes`` is the triangle-area array the mesh loader computed
+    from the same scaled vertices, in element order, so it matches
+    ``loaded.physical_tags`` element for element. Anything that does not line
+    up with the tag count is ignored rather than trusted.
+    """
+    volumes = getattr(loaded.grid, "volumes", None)
+    if volumes is None:
+        return None
+    areas = np.asarray(volumes, dtype=np.float64).reshape(-1)
+    n_elements = int(np.asarray(loaded.physical_tags).reshape(-1).size)
+    if areas.size != n_elements:
+        return None
+    return areas
+
+
+def _check_triangle_arrays(
+    vertices: NDArray[np.float64],
+    elements: NDArray[np.int_],
+    layout: str,
+) -> None:
+    """Reject an index that the resolved layout cannot address."""
+    if vertices.ndim != 2 or vertices.shape[1] != 3:
+        raise ValueError(
+            f"with mesh_array_layout={layout!r} the vertex array resolves to "
+            f"shape {vertices.shape}, expected (n_vertices, 3)"
+        )
+    if elements.ndim != 2 or elements.shape[1] != 3:
+        raise ValueError(
+            f"with mesh_array_layout={layout!r} the element array resolves to "
+            f"shape {elements.shape}, expected (n_elements, 3)"
+        )
+    if elements.size and (
+        int(elements.min()) < 0 or int(elements.max()) >= vertices.shape[0]
+    ):
+        raise ValueError(
+            f"with mesh_array_layout={layout!r} triangle indices span "
+            f"[{int(elements.min())}, {int(elements.max())}] but the mesh "
+            f"resolves to {vertices.shape[0]} vertices; the layout is wrong"
+        )
 
 
 def _check_shared_sphere_geometry(results, *, context: str) -> None:

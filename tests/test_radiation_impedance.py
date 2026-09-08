@@ -65,6 +65,99 @@ def _fake_three_tag_mesh():
     return SimpleNamespace(grid=grid, physical_tags=physical_tags)
 
 
+def _fake_three_tag_mesh_columns():
+    """The same three triangles in the canonical Bempp column layout."""
+    mesh = _fake_three_tag_mesh()
+    mesh.grid.vertices = mesh.grid.vertices.T
+    mesh.grid.elements = mesh.grid.elements.T
+    return mesh
+
+
+def _fake_ambiguous_three_by_three_mesh():
+    """Three vertices and three elements: both arrays are (3, 3)."""
+    grid = SimpleNamespace(
+        vertices=np.array(
+            [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 10.0]],
+            dtype=np.float64,
+        ),
+        elements=np.array([[0, 1, 2], [1, 2, 0], [2, 0, 1]], dtype=np.int32),
+    )
+    return SimpleNamespace(
+        grid=grid, physical_tags=np.array([2, 3, 4], dtype=np.int32)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Shared triangle-area helper: layout must never be guessed at N == 3
+# ---------------------------------------------------------------------------
+
+
+def test_column_layout_three_triangle_mesh_normalizes_by_the_real_area(monkeypatch):
+    """A three-element Bempp-layout mesh used to yield zero-area apertures.
+
+    Each triangle is 0.5 m^2, so a unit normal velocity gives Q = 0.5 m^3/s
+    and Z = p/Q = 2*p.
+    """
+    mesh = _fake_three_tag_mesh_columns()
+
+    def fake_solve_frequencies(loaded, frequencies, cfg):
+        return _fake_result(frequencies, {2: np.array([6.0 - 8.0j])})
+
+    _patch_metal_api(monkeypatch, fake_solve_frequencies)
+
+    result = radiation_impedance.solve_aperture_matrix(
+        mesh, {"port": [2]}, np.array([100.0]), normal_velocity=1.0
+    )
+
+    assert result.aperture_area_m2["port"] == pytest.approx(0.5)
+    assert result.impedance_matrix[0, 0, 0] == pytest.approx(12.0 - 16.0j)
+
+
+def test_ambiguous_mesh_is_rejected_before_solving(monkeypatch):
+    mesh = _fake_ambiguous_three_by_three_mesh()
+
+    def fail_solve_frequencies(loaded, frequencies, cfg):
+        raise AssertionError("must not solve with an unresolved mesh layout")
+
+    _patch_metal_api(monkeypatch, fail_solve_frequencies)
+
+    with pytest.raises(ValueError, match="Cannot determine the mesh array layout"):
+        radiation_impedance.solve_aperture_matrix(
+            mesh, {"port": [2]}, np.array([100.0]), normal_velocity=1.0
+        )
+
+
+def test_explicit_layout_reaches_both_area_helpers(monkeypatch):
+    """``mesh_array_layout`` must reach the per-tag areas too.
+
+    The receiver aggregation is tag-area weighted, so a layout that only
+    reached ``_aperture_face_areas`` would still fail here.
+    """
+    mesh = _fake_ambiguous_three_by_three_mesh()
+    row_area = 1.5 * np.sqrt(2.0)
+
+    def fake_solve_frequencies(loaded, frequencies, cfg):
+        return _fake_result(
+            frequencies,
+            {2: np.array([4.0 + 0.0j]), 3: np.array([8.0 + 0.0j])},
+        )
+
+    _patch_metal_api(monkeypatch, fake_solve_frequencies)
+
+    result = radiation_impedance.solve_aperture_matrix(
+        mesh,
+        {"combined": [2, 3]},
+        np.array([100.0]),
+        normal_velocity=1.0,
+        mesh_array_layout="rows",
+    )
+
+    # Both tags have the same area, so the weighted average is (4+8)/2 = 6,
+    # and Q = 1.0 * (2 * row_area).
+    assert result.aperture_area_m2["combined"] == pytest.approx(2.0 * row_area)
+    assert result.impedance_matrix[0, 0, 0] == pytest.approx(6.0 / (2.0 * row_area))
+
+
 def test_aperture_matrix_preload_forwards_native_symmetry_plane(monkeypatch):
     mesh = _fake_three_tag_mesh()
     captured_load = {}

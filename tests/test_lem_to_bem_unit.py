@@ -133,6 +133,200 @@ def test_aperture_face_areas_empty_tag_list_raises():
 
 
 # ---------------------------------------------------------------------------
+# Array layout: (3, N) vs (N, 3) must never be guessed at N == 3
+# ---------------------------------------------------------------------------
+
+
+def _fake_three_triangle_mesh(*, layout="rows"):
+    """Three separate 0.5 m^2 triangles tagged 2, 3 and 4.
+
+    With three elements the element array is ``(3, 3)`` in either layout;
+    seven vertices keep the vertex array unambiguous.
+    """
+    vertices = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [2.0, 1.0, 0.0],
+            [3.0, 0.0, 0.0],
+            [3.0, 1.0, 0.0],
+        ],
+        dtype=np.float64,
+    )
+    elements = np.array([[0, 1, 2], [1, 3, 4], [3, 5, 6]], dtype=np.int32)
+    if layout == "columns":
+        vertices = vertices.T
+        elements = elements.T
+    grid = SimpleNamespace(vertices=vertices, elements=elements)
+    return SimpleNamespace(
+        grid=grid,
+        physical_tags=np.array([2, 3, 4], dtype=np.int32),
+        info=SimpleNamespace(n_triangles=3),
+    )
+
+
+# A grid with three vertices AND three elements: both arrays are (3, 3), and
+# the two readings give genuinely different areas, so a guess is observable.
+_AMBIGUOUS_VERTICES = np.array(
+    [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 10.0]],
+    dtype=np.float64,
+)
+# Transpose-invariant, so only the vertex reading changes the answer.
+_AMBIGUOUS_ELEMENTS = np.array([[0, 1, 2], [1, 2, 0], [2, 0, 1]], dtype=np.int32)
+_AMBIGUOUS_ROW_AREA = 1.5 * np.sqrt(2.0)
+_AMBIGUOUS_COLUMN_AREA = 0.5 * np.sqrt(2.0)
+
+
+def _fake_ambiguous_mesh(*, volumes=None):
+    grid = SimpleNamespace(
+        vertices=_AMBIGUOUS_VERTICES.copy(),
+        elements=_AMBIGUOUS_ELEMENTS.copy(),
+    )
+    if volumes is not None:
+        grid.volumes = np.asarray(volumes, dtype=np.float64)
+    return SimpleNamespace(
+        grid=grid,
+        physical_tags=np.array([2, 3, 4], dtype=np.int32),
+        info=SimpleNamespace(n_triangles=3),
+    )
+
+
+def test_canonical_column_layout_three_triangles_keeps_real_areas():
+    """The NUM-3 acceptance case: a (3, 3) element array in column layout.
+
+    The old helper transposed ``(3, N)`` only when ``N != 3``, so exactly
+    three triangles were read as three coordinates and every area collapsed
+    to zero. Seven vertices still settle the layout, so no hint is needed.
+    """
+    mesh = _fake_three_triangle_mesh(layout="columns")
+    areas = lem_to_bem._triangle_face_areas(mesh)
+    np.testing.assert_allclose(areas, [0.5, 0.5, 0.5])
+    assert _aperture_face_areas(mesh, {"a": [2], "b": [3], "c": [4]}) == {
+        "a": pytest.approx(0.5),
+        "b": pytest.approx(0.5),
+        "c": pytest.approx(0.5),
+    }
+
+
+def test_row_and_column_layouts_of_the_same_mesh_agree():
+    row = lem_to_bem._triangle_face_areas(_fake_three_triangle_mesh(layout="rows"))
+    column = lem_to_bem._triangle_face_areas(
+        _fake_three_triangle_mesh(layout="columns")
+    )
+    np.testing.assert_allclose(row, column)
+
+
+def test_fully_ambiguous_three_by_three_grid_refuses_to_guess():
+    """Three vertices and three elements: nothing in the shape can decide."""
+    mesh = _fake_ambiguous_mesh()
+    with pytest.raises(ValueError, match="Cannot determine the mesh array layout"):
+        lem_to_bem._triangle_face_areas(mesh)
+    with pytest.raises(ValueError, match="Cannot determine the mesh array layout"):
+        _aperture_face_areas(mesh, {"a": [2]})
+
+
+@pytest.mark.parametrize(
+    ("layout", "expected"),
+    [("rows", _AMBIGUOUS_ROW_AREA), ("columns", _AMBIGUOUS_COLUMN_AREA)],
+)
+def test_explicit_layout_resolves_the_ambiguous_grid(layout, expected):
+    """Each reading is a different, analytically known triangle."""
+    mesh = _fake_ambiguous_mesh()
+    areas = lem_to_bem._triangle_face_areas(mesh, mesh_array_layout=layout)
+    np.testing.assert_allclose(areas, [expected] * 3)
+    assert _aperture_face_areas(
+        mesh, {"a": [2]}, mesh_array_layout=layout
+    )["a"] == pytest.approx(expected)
+
+
+def test_grid_declared_layout_resolves_the_ambiguous_grid():
+    mesh = _fake_ambiguous_mesh()
+    mesh.grid.array_layout = "columns"
+    np.testing.assert_allclose(
+        lem_to_bem._triangle_face_areas(mesh),
+        [_AMBIGUOUS_COLUMN_AREA] * 3,
+    )
+
+
+def test_declared_element_areas_resolve_the_ambiguous_grid():
+    """``PureGrid.volumes`` is authoritative and needs no layout at all."""
+    mesh = _fake_ambiguous_mesh(volumes=[0.25, 0.5, 0.75])
+    np.testing.assert_allclose(
+        lem_to_bem._triangle_face_areas(mesh), [0.25, 0.5, 0.75]
+    )
+    assert _aperture_face_areas(mesh, {"a": [3]})["a"] == pytest.approx(0.5)
+
+
+def test_volume_array_that_does_not_match_the_tag_count_is_not_trusted():
+    mesh = _fake_ambiguous_mesh(volumes=[0.25, 0.5])
+    with pytest.raises(ValueError, match="Cannot determine the mesh array layout"):
+        lem_to_bem._triangle_face_areas(mesh)
+
+
+def test_explicit_layout_beats_a_shape_that_would_resolve_differently():
+    """An explicit layout must win, and a wrong one must be caught."""
+    mesh = _fake_three_triangle_mesh(layout="columns")
+    np.testing.assert_allclose(
+        lem_to_bem._triangle_face_areas(mesh, mesh_array_layout="columns"),
+        [0.5, 0.5, 0.5],
+    )
+    with pytest.raises(ValueError, match="expected \\(n_vertices, 3\\)"):
+        lem_to_bem._triangle_face_areas(mesh, mesh_array_layout="rows")
+
+
+def test_unknown_mesh_array_layout_raises():
+    mesh = _fake_three_triangle_mesh()
+    with pytest.raises(ValueError, match="mesh_array_layout must be one of"):
+        lem_to_bem._triangle_face_areas(mesh, mesh_array_layout="bempp")
+
+
+def test_layout_mismatch_between_vertices_and_elements_raises():
+    mesh = _fake_three_triangle_mesh(layout="rows")
+    mesh.grid.elements = np.array(
+        [[0, 1, 3, 3], [1, 3, 5, 5], [2, 4, 6, 6]], dtype=np.int32
+    )
+    mesh.physical_tags = np.array([2, 3, 4, 4], dtype=np.int32)
+    with pytest.raises(ValueError, match="implies a 'rows' layout"):
+        lem_to_bem._triangle_face_areas(mesh)
+
+
+def test_out_of_range_indices_report_the_layout():
+    mesh = _fake_three_triangle_mesh(layout="rows")
+    mesh.grid.vertices = mesh.grid.vertices[:3]
+    with pytest.raises(ValueError, match="the layout is wrong"):
+        lem_to_bem._triangle_face_areas(mesh, mesh_array_layout="rows")
+
+
+def test_native_pure_grid_three_triangles_and_three_vertices():
+    """The canonical loader's own grid resolves without any hint."""
+    metal_mesh = pytest.importorskip("hornlab_metal_bem.mesh")
+
+    vertices = np.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        dtype=np.float64,
+    )
+    triangles = np.array([[0, 1, 2], [0, 1, 2], [0, 1, 2]], dtype=np.int32)
+    grid = metal_mesh.make_pure_grid(vertices, triangles)
+    # Bempp layout, and both arrays are the ambiguous (3, 3).
+    assert grid.vertices.shape == (3, 3)
+    assert grid.elements.shape == (3, 3)
+
+    mesh = SimpleNamespace(
+        grid=grid,
+        physical_tags=np.array([2, 3, 4], dtype=np.int32),
+        info=SimpleNamespace(n_triangles=3),
+    )
+    np.testing.assert_allclose(
+        lem_to_bem._triangle_face_areas(mesh), [0.5, 0.5, 0.5]
+    )
+    assert _aperture_face_areas(mesh, {"face": [2, 3, 4]})["face"] == pytest.approx(
+        1.5
+    )
+
+
+# ---------------------------------------------------------------------------
 # Input validation through solve()
 # ---------------------------------------------------------------------------
 

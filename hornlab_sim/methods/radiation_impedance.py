@@ -96,6 +96,7 @@ def solve_aperture_matrix(
     config: Any | None = None,
     *,
     normal_velocity: complex = 1.0 + 0.0j,
+    mesh_array_layout: str | None = None,
 ) -> RadiationImpedanceResult:
     """Compute a BEM radiation impedance matrix for aperture patches.
 
@@ -114,6 +115,13 @@ def solve_aperture_matrix(
     normal_velocity
         Unit normal velocity imposed on all faces of the active source
         aperture.  Must be nonzero.
+    mesh_array_layout
+        Layout of ``mesh.grid.vertices`` / ``mesh.grid.elements``, either
+        ``"columns"`` (the canonical Bempp/``PureGrid`` layout) or ``"rows"``.
+        Leave it ``None`` for ordinary meshes; it is required only for a grid
+        whose arrays are exactly ``(3, 3)``, where the shape cannot say which
+        axis is the triangle axis. See
+        ``lem_to_bem._triangle_face_areas``.
 
     Returns
     -------
@@ -154,9 +162,13 @@ def solve_aperture_matrix(
     else:
         loaded = mesh
 
-    aperture_area_m2 = _aperture_face_areas(loaded, aperture_tags)
+    aperture_area_m2 = _aperture_face_areas(
+        loaded, aperture_tags, mesh_array_layout=mesh_array_layout
+    )
     unique_tags = sorted({int(tag) for tags in aperture_tags.values() for tag in tags})
-    tag_area_m2 = _tag_face_areas(loaded, unique_tags)
+    tag_area_m2 = _tag_face_areas(
+        loaded, unique_tags, mesh_array_layout=mesh_array_layout
+    )
 
     base_config = replace(config, velocity_mode=api.VelocityMode.VELOCITY)
     matrix = np.zeros(
@@ -653,8 +665,13 @@ def _validate_aperture_tags(aperture_tags: Mapping[str, list[int]]) -> list[str]
     return names
 
 
-def _tag_face_areas(loaded: "LoadedMesh", tags: list[int]) -> dict[int, float]:
-    tri_areas = _triangle_face_areas(loaded)
+def _tag_face_areas(
+    loaded: "LoadedMesh",
+    tags: list[int],
+    *,
+    mesh_array_layout: str | None = None,
+) -> dict[int, float]:
+    tri_areas = _triangle_face_areas(loaded, mesh_array_layout=mesh_array_layout)
     physical_tags = np.asarray(loaded.physical_tags)
     result: dict[int, float] = {}
     for tag in tags:
