@@ -194,6 +194,163 @@ def test_aperture_matrix_prefers_multi_source_backend(monkeypatch):
     np.testing.assert_allclose(result.impedance_matrix[:, 1, 1], [23, 24])
 
 
+# ---------------------------------------------------------------------------
+# Incomplete / malformed basis sweeps must be rejected, never broadcast
+# ---------------------------------------------------------------------------
+
+
+def test_single_row_early_stop_is_rejected(monkeypatch):
+    """The NUM-2 acceptance case: one solved row must not fill three.
+
+    ``SolveConfig(on_frequency_result=...)`` returning ``False`` after the
+    first frequency is a supported Metal outcome. The truncated result used
+    to broadcast into every requested frequency and be labelled as solved.
+    """
+    mesh = _fake_three_tag_mesh()
+    freqs = np.array([100.0, 200.0, 400.0])
+
+    def fake_solve_frequencies(loaded, frequencies, cfg):
+        return _fake_result(
+            frequencies,
+            {2: np.array([3.0 - 4.0j])},
+            frequencies_hz=np.asarray(frequencies)[:1],
+        )
+
+    _patch_metal_api(monkeypatch, fake_solve_frequencies)
+
+    with pytest.raises(RuntimeError, match="returned 1 frequency"):
+        radiation_impedance.solve_aperture_matrix(
+            mesh, {"port": [2]}, freqs, normal_velocity=1.0
+        )
+
+
+def test_multi_row_partial_sweep_is_rejected(monkeypatch):
+    """A partial sweep that is longer than one row is rejected too."""
+    mesh = _fake_three_tag_mesh()
+    freqs = np.array([100.0, 200.0, 400.0])
+
+    def fake_solve_frequencies(loaded, frequencies, cfg):
+        return _fake_result(
+            frequencies,
+            {2: np.array([1.0 + 0.0j, 2.0 + 0.0j])},
+            frequencies_hz=np.asarray(frequencies)[:2],
+        )
+
+    _patch_metal_api(monkeypatch, fake_solve_frequencies)
+
+    with pytest.raises(RuntimeError, match="returned 2 frequency"):
+        radiation_impedance.solve_aperture_matrix(
+            mesh, {"port": [2]}, freqs, normal_velocity=1.0
+        )
+
+
+def test_reordered_frequency_axis_is_rejected(monkeypatch):
+    """A complete but reordered axis would silently mislabel every row."""
+    mesh = _fake_three_tag_mesh()
+    freqs = np.array([100.0, 200.0, 400.0])
+
+    def fake_solve_frequencies(loaded, frequencies, cfg):
+        return _fake_result(
+            frequencies,
+            {2: np.array([1.0 + 0.0j, 2.0 + 0.0j, 3.0 + 0.0j])},
+            frequencies_hz=np.array([400.0, 100.0, 200.0]),
+        )
+
+    _patch_metal_api(monkeypatch, fake_solve_frequencies)
+
+    with pytest.raises(RuntimeError, match="expected the 3 requested"):
+        radiation_impedance.solve_aperture_matrix(
+            mesh, {"port": [2]}, freqs, normal_velocity=1.0
+        )
+
+
+def test_missing_basis_column_is_rejected(monkeypatch):
+    """Fewer basis results than source apertures must not truncate silently."""
+    mesh = _fake_three_tag_mesh()
+    freqs = np.array([100.0, 200.0])
+
+    def fail_solve_frequencies(loaded, frequencies, cfg):
+        raise AssertionError("multi-source path must be used here")
+
+    api = _patch_metal_api(monkeypatch, fail_solve_frequencies)
+
+    def short_multi_source(loaded, frequencies, source_dicts, cfg):
+        return [
+            _fake_result(
+                frequencies,
+                {
+                    2: np.array([1.0 + 0.0j, 2.0 + 0.0j]),
+                    3: np.array([3.0 + 0.0j, 4.0 + 0.0j]),
+                },
+            )
+        ]
+
+    api.solve_multi_source = short_multi_source
+
+    with pytest.raises(RuntimeError, match="returned 1 basis result"):
+        radiation_impedance.solve_aperture_matrix(
+            mesh, {"driver": [2], "port": [3]}, freqs, normal_velocity=1.0
+        )
+
+
+def test_short_pressure_vector_with_complete_axis_is_rejected(monkeypatch):
+    """A truthful frequency axis does not excuse a broadcastable pressure row."""
+    mesh = _fake_three_tag_mesh()
+    freqs = np.array([100.0, 200.0, 400.0])
+
+    def fake_solve_frequencies(loaded, frequencies, cfg):
+        return _fake_result(frequencies, {2: np.array([3.0 - 4.0j])})
+
+    _patch_metal_api(monkeypatch, fake_solve_frequencies)
+
+    with pytest.raises(RuntimeError, match=r"has shape \(1,\), expected \(3,\)"):
+        radiation_impedance.solve_aperture_matrix(
+            mesh, {"port": [2]}, freqs, normal_velocity=1.0
+        )
+
+
+def test_missing_frequency_axis_is_rejected(monkeypatch):
+    """A result that cannot confirm its axis cannot be assembled."""
+    mesh = _fake_three_tag_mesh()
+    freqs = np.array([100.0, 200.0])
+
+    def fake_solve_frequencies(loaded, frequencies, cfg):
+        return SimpleNamespace(
+            surface_pressure_avg={2: np.array([1.0 + 0.0j, 2.0 + 0.0j])},
+            solver_log=[],
+        )
+
+    _patch_metal_api(monkeypatch, fake_solve_frequencies)
+
+    with pytest.raises(RuntimeError, match="did not report frequencies_hz"):
+        radiation_impedance.solve_aperture_matrix(
+            mesh, {"port": [2]}, freqs, normal_velocity=1.0
+        )
+
+
+def test_complete_sweep_still_assembles_exact_values(monkeypatch):
+    """The guard must not reject a well-formed sweep.
+
+    Tag 2 has area 0.5 m^2 and unit normal velocity, so Q = 0.5 m^3/s and
+    Z = p/Q is exactly twice the reported average pressure.
+    """
+    mesh = _fake_three_tag_mesh()
+    freqs = np.array([100.0, 200.0, 400.0])
+    pressures = np.array([3.0 - 4.0j, 1.0 + 1.0j, -2.0 + 0.5j])
+
+    def fake_solve_frequencies(loaded, frequencies, cfg):
+        return _fake_result(frequencies, {2: pressures})
+
+    _patch_metal_api(monkeypatch, fake_solve_frequencies)
+
+    result = radiation_impedance.solve_aperture_matrix(
+        mesh, {"port": [2]}, freqs, normal_velocity=1.0
+    )
+
+    np.testing.assert_array_equal(result.frequencies_hz, freqs)
+    np.testing.assert_allclose(result.impedance_matrix[:, 0, 0], pressures / 0.5)
+
+
 def test_velocity_mode_matrix_normalizes_by_volume_velocity_v_times_area(monkeypatch):
     mesh = _fake_three_tag_mesh()
 
@@ -518,8 +675,16 @@ def test_zero_normal_velocity_raises():
         )
 
 
-def _fake_result(freqs, surface_pressure_avg):
+def _fake_result(freqs, surface_pressure_avg, *, frequencies_hz=None):
+    """Stand-in for a Metal SolveResult.
+
+    ``frequencies_hz`` defaults to the requested axis, which is what a
+    complete sweep echoes back. Pass a shorter axis to fake an early stop.
+    """
+    if frequencies_hz is None:
+        frequencies_hz = freqs
     return SimpleNamespace(
+        frequencies_hz=np.asarray(frequencies_hz, dtype=np.float64).reshape(-1),
         surface_pressure_avg=surface_pressure_avg,
         solver_log=[],
     )

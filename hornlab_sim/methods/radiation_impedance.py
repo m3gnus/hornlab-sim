@@ -119,6 +119,17 @@ def solve_aperture_matrix(
     -------
     RadiationImpedanceResult
         Dense aperture matrix ``Z[f, receiver, source]``.
+
+    Raises
+    ------
+    RuntimeError
+        The backend returned fewer basis solves than there are source
+        apertures, a frequency axis that is not exactly the requested one, or
+        a surface-pressure vector whose length is not the requested frequency
+        count. There is no partial-result contract here: a sweep stopped early
+        by ``SolveConfig(on_frequency_result=...)`` returning ``False``, or
+        cancelled by any other supported means, is rejected rather than
+        broadcast into a complete-looking matrix.
     """
     freqs = _validate_frequencies(frequencies_hz)
     aperture_names = _validate_aperture_tags(aperture_tags)
@@ -174,19 +185,20 @@ def solve_aperture_matrix(
             for sources in source_dicts
         ]
 
-    for source_idx, (source_name, result) in enumerate(zip(aperture_names, results)):
-        if result.surface_pressure_avg is None:
-            raise RuntimeError(
-                f"{api.name} result did not include surface_pressure_avg; "
-                "cannot assemble aperture radiation matrix"
-            )
+    # Nothing below may infer completion from a successful NumPy assignment:
+    # a one-row early stop broadcasts silently into every requested frequency.
+    results = _validate_basis_sweep(results, aperture_names, freqs, backend=api.name)
 
+    for source_idx, (source_name, result) in enumerate(zip(aperture_names, results)):
         volume_velocity = drive_velocity * aperture_area_m2[source_name]
         for recv_idx, recv_name in enumerate(aperture_names):
             p_avg = _aggregate_aperture_pressure(
                 result.surface_pressure_avg,
                 aperture_tags[recv_name],
                 tag_area_m2,
+                expected_frequency_count=freqs.size,
+                backend=api.name,
+                source_aperture=source_name,
             )
             matrix[:, recv_idx, source_idx] = p_avg / volume_velocity
 
@@ -656,10 +668,70 @@ def _tag_face_areas(loaded: "LoadedMesh", tags: list[int]) -> dict[int, float]:
     return result
 
 
+def _validate_basis_sweep(
+    results,
+    aperture_names: list[str],
+    freqs: NDArray[np.float64],
+    *,
+    backend: str,
+) -> list:
+    """Reject anything that is not one complete basis sweep per aperture.
+
+    ``hornlab_metal_bem`` genuinely supports stopping a sweep early: both the
+    single-source and multi-source callbacks honour an
+    ``on_frequency_result`` that returns ``False``. A truncated sweep is a
+    legitimate backend outcome, not a malformed one — but there is no partial
+    contract on this side, and a one-row result would broadcast into every
+    requested frequency without raising. So the wrapper checks the basis
+    count and the exact returned frequency axis before it fills any matrix.
+    """
+    results = list(results)
+    if len(results) != len(aperture_names):
+        raise RuntimeError(
+            f"{backend} returned {len(results)} basis result(s) for "
+            f"{len(aperture_names)} source aperture(s) "
+            f"({aperture_names}); the aperture radiation matrix needs exactly "
+            "one complete basis solve per source aperture"
+        )
+
+    for source_name, result in zip(aperture_names, results):
+        if getattr(result, "surface_pressure_avg", None) is None:
+            raise RuntimeError(
+                f"{backend} result did not include surface_pressure_avg; "
+                "cannot assemble aperture radiation matrix"
+            )
+
+        returned = getattr(result, "frequencies_hz", None)
+        if returned is None:
+            raise RuntimeError(
+                f"{backend} basis solve for source aperture {source_name!r} "
+                "did not report frequencies_hz; the requested frequency axis "
+                "cannot be confirmed, so the sweep cannot be assembled into a "
+                "radiation matrix"
+            )
+        returned_axis = np.asarray(returned, dtype=np.float64).reshape(-1)
+        if returned_axis.shape != freqs.shape or not np.array_equal(
+            returned_axis, freqs
+        ):
+            raise RuntimeError(
+                f"{backend} basis solve for source aperture {source_name!r} "
+                f"returned {returned_axis.size} frequency(ies) "
+                f"{returned_axis[:5].tolist()}, expected the {freqs.size} "
+                f"requested {freqs[:5].tolist()}. An incomplete, reordered or "
+                "cancelled sweep (for example on_frequency_result returning "
+                "False) is not a partial radiation matrix"
+            )
+    return results
+
+
 def _aggregate_aperture_pressure(
     surface_pressure_avg: Mapping[int, NDArray[np.complex128]],
     tags: list[int],
     tag_area_m2: Mapping[int, float],
+    *,
+    expected_frequency_count: int,
+    backend: str = "solver",
+    source_aperture: str | None = None,
 ) -> NDArray[np.complex128]:
     total_area = sum(tag_area_m2[int(tag)] for tag in tags)
     if total_area <= 0.0:
@@ -674,6 +746,18 @@ def _aggregate_aperture_pressure(
                 "make sure all receiver tags are included in velocity_sources"
             )
         arr = np.asarray(surface_pressure_avg[tag_i], dtype=np.complex128)
+        if arr.shape != (int(expected_frequency_count),):
+            where = (
+                f" from the {source_aperture!r} basis solve"
+                if source_aperture is not None
+                else ""
+            )
+            raise RuntimeError(
+                f"{backend} surface_pressure_avg[{tag_i}]{where} has shape "
+                f"{arr.shape}, expected ({int(expected_frequency_count)},). "
+                "A pressure vector shorter than the requested sweep would "
+                "broadcast into every frequency of the radiation matrix"
+            )
         contrib = arr * tag_area_m2[tag_i]
         weighted = contrib if weighted is None else weighted + contrib
 
