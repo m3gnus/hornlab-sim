@@ -34,6 +34,30 @@ cd hornlab-sim
 pip install -e ".[dev]"
 ```
 
+## Running the tests
+
+```bash
+pytest tests          # 162 tests: 160 pass, 2 skip
+```
+
+`[dev]` installs the `[fem]` extra too, because `tests/test_acoustic_fem.py`
+imports the FEM module directly and fails — it does not skip — without SciPy.
+
+**Two tests skip on a plain checkout, and this repository has no CI to notice
+if they ever stop existing.** Both need something that is not a dependency of
+this package:
+
+| Test | Needs | Install |
+|---|---|---|
+| `tests/test_lem_to_bem_parity_metal.py` | `gmsh` | `pip install gmsh` |
+| `tests/test_lem_to_bem_unit.py::test_native_pure_grid_three_triangles_and_three_vertices` | the Metal solver | `pip install -e ".[metal]"` |
+
+They cover the LEM→BEM seam, where the time-convention rule below is enforced
+— which is the part of this package a single-aperture magnitude check cannot
+see at all. Run them before changing anything at that seam. A skipped test and
+a deleted one look identical in a green summary, so check the count: a run that
+reports more than 2 skipped is measuring less than you think.
+
 ## Agent / user guidance
 
 See `AGENTS.md` for the decision tree: which method to reach for given the

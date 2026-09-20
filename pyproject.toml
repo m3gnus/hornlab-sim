@@ -22,7 +22,14 @@ hornlab-validate-hornresp = "hornlab_sim.hornresp.validate:main"
 [project.optional-dependencies]
 metal = ["hornlab-metal-bem @ git+https://github.com/m3gnus/hornlab-metal-bem.git"]
 fem = ["scipy", "meshio"]
-dev = ["pytest"]
+# `dev` pulls in `fem` because five tests in tests/test_acoustic_fem.py import
+# the FEM module directly and *fail* -- they do not skip -- when SciPy is
+# absent. README.md documents `pip install -e ".[dev]"` as the development
+# install, so without this the documented setup produces a suite that is red on
+# a clean checkout for a reason that has nothing to do with the code. A gate
+# that is red out of the box teaches the reader to ignore red, which costs more
+# than the two wheels.
+dev = ["pytest", "hornlab-sim[fem]"]
 
 [tool.setuptools.packages.find]
 include = ["hornlab_sim*"]
