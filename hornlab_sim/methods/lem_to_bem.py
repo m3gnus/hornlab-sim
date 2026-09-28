@@ -328,6 +328,8 @@ def solve(
             velocity_weights,
             freqs,
             combined_config=combined_config,
+            aperture_indices=aperture_indices,
+            tag_owners=tag_owners,
         )
     else:
         per_freq_results = []
@@ -649,8 +651,10 @@ def _combine_basis_results(
     frequencies_hz,
     *,
     combined_config,
+    aperture_indices,
+    tag_owners,
 ):
-    """Linearly combine unit-aperture SolveResults at each frequency."""
+    """Linearly combine unit-aperture results, including impedance per row."""
     if not basis_results:
         raise ValueError("no aperture basis results to combine")
     weights = np.asarray(velocity_weights, dtype=np.complex128)
@@ -686,7 +690,6 @@ def _combine_basis_results(
         return np.einsum("fs,sf...->f...", weights, values)
 
     pressure_complex = weighted_result_field("pressure_complex")
-    impedance = weighted_result_field("impedance")
     first = basis_results[0]
     angles = np.asarray(first.observation_angles_deg, dtype=np.float64)
     on_axis_index = int(np.argmin(np.abs(angles)))
@@ -714,6 +717,23 @@ def _combine_basis_results(
             )
             surface_pressure_avg[tag] = np.einsum("fs,sf->f", weights, values)
 
+    impedance = None
+    if surface_pressure_avg is not None:
+        impedance_rows = []
+        for frequency_index, frequency_weights in enumerate(weights):
+            source_tag = _lowest_driven_tag(
+                frequency_weights,
+                aperture_indices,
+                tag_owners,
+            )
+            pressure = surface_pressure_avg.get(source_tag)
+            if pressure is None or np.asarray(pressure).shape != frequencies.shape:
+                impedance_rows = []
+                break
+            impedance_rows.append(np.asarray(pressure)[frequency_index])
+        if len(impedance_rows) == frequencies.size:
+            impedance = np.asarray(impedance_rows, dtype=np.complex128)
+
     surface_pressure_complex = weighted_result_field(
         "surface_pressure_complex", optional=True
     )
@@ -725,7 +745,17 @@ def _combine_basis_results(
         basis_results,
         weights,
         frequencies,
+        impedance,
+        aperture_indices,
+        tag_owners,
     )
+    if impedance is None and solver_log and all(
+        entry.get("impedance") is not None for entry in solver_log
+    ):
+        impedance = np.asarray(
+            [entry["impedance"] for entry in solver_log],
+            dtype=np.complex128,
+        )
     optional_fields = {}
     if hasattr(first, "surface_pressure_complex"):
         optional_fields["surface_pressure_complex"] = surface_pressure_complex
@@ -736,7 +766,9 @@ def _combine_basis_results(
         frequencies_hz=np.array(frequencies, copy=True),
         pressure_complex=np.asarray(pressure_complex, dtype=np.complex128),
         directivity_db=np.asarray(directivity_db, dtype=np.float64),
-        impedance=np.asarray(impedance, dtype=np.complex128),
+        impedance=(
+            None if impedance is None else np.asarray(impedance, dtype=np.complex128)
+        ),
         config=combined_config,
         timings={
             "lem_to_bem_total_s": sum(
@@ -749,7 +781,14 @@ def _combine_basis_results(
     )
 
 
-def _combine_basis_solver_logs(basis_results, weights, frequencies):
+def _combine_basis_solver_logs(
+    basis_results,
+    weights,
+    frequencies,
+    combined_impedance,
+    aperture_indices,
+    tag_owners,
+):
     """Reconstruct one combined-source solver-log entry per frequency."""
     frequency_count = len(frequencies)
     basis_logs: list[list[dict]] = []
@@ -766,16 +805,53 @@ def _combine_basis_solver_logs(basis_results, weights, frequencies):
         basis_logs.append(logs)
 
     combined_logs: list[dict] = []
-    for frequency, frequency_weights, source_entries in zip(
-        frequencies, weights, zip(*basis_logs)
+    for frequency_index, (frequency, frequency_weights, source_entries) in enumerate(
+        zip(frequencies, weights, zip(*basis_logs))
     ):
         entry = dict(source_entries[0])
         entry["frequency_hz"] = float(frequency)
 
-        if all(source.get("impedance") is not None for source in source_entries):
-            entry["impedance"] = sum(
-                weight * source["impedance"]
-                for weight, source in zip(frequency_weights, source_entries)
+        surface_pressure_logs = [
+            source.get("surface_pressure_avg") for source in source_entries
+        ]
+        combined_log_surface_pressure = None
+        if any(value is not None for value in surface_pressure_logs):
+            if all(isinstance(value, Mapping) for value in surface_pressure_logs):
+                log_tags = set.intersection(
+                    *(set(value) for value in surface_pressure_logs)
+                )
+                combined_log_surface_pressure = {}
+                for tag in log_tags:
+                    pressures = [
+                        _log_pressure_at_frequency(
+                            value[tag], frequency_index, frequency_count
+                        )
+                        for value in surface_pressure_logs
+                    ]
+                    if all(value is not None for value in pressures):
+                        combined_log_surface_pressure[tag] = sum(
+                            weight * pressure
+                            for weight, pressure in zip(frequency_weights, pressures)
+                        )
+                entry["surface_pressure_avg"] = combined_log_surface_pressure
+            else:
+                entry["surface_pressure_avg"] = None
+
+        if combined_impedance is not None:
+            entry["impedance"] = complex(combined_impedance[frequency_index])
+        else:
+            source_tag = _lowest_driven_tag(
+                frequency_weights,
+                aperture_indices,
+                tag_owners,
+            )
+            pressure = (
+                None
+                if combined_log_surface_pressure is None
+                else combined_log_surface_pressure.get(source_tag)
+            )
+            entry["impedance"] = (
+                None if pressure is None else complex(pressure)
             )
 
         sphere_fields = [
@@ -799,6 +875,29 @@ def _combine_basis_solver_logs(basis_results, weights, frequencies):
             )
         combined_logs.append(entry)
     return combined_logs
+
+
+def _lowest_driven_tag(frequency_weights, aperture_indices, tag_owners):
+    """Select the combined impedance tag independently at each frequency."""
+    driven_tags = [
+        int(tag)
+        for tag, aperture in tag_owners.items()
+        if frequency_weights[aperture_indices[aperture]] != 0
+    ]
+    return min(driven_tags, default=min(tag_owners, default=2))
+
+
+def _log_pressure_at_frequency(value, frequency_index, frequency_count):
+    """Return a scalar or per-frequency logged surface pressure, if valid."""
+    try:
+        pressure = np.asarray(value, dtype=np.complex128)
+    except (TypeError, ValueError):
+        return None
+    if pressure.ndim == 0:
+        return complex(pressure)
+    if pressure.shape == (frequency_count,):
+        return complex(pressure[frequency_index])
+    return None
 
 
 def _metal_api(config: Any | None = None):

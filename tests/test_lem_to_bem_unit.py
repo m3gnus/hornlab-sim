@@ -692,6 +692,71 @@ def test_basis_and_sequential_paths_agree_under_conjugation(monkeypatch):
     assert basis.config.velocity_sources[3] == pytest.approx(expected[0, 1])
 
 
+def test_basis_impedance_uses_combined_lowest_driven_tag_per_frequency(monkeypatch):
+    mesh = _fake_unit_square_mesh()
+    frequencies = np.array([100.0, 200.0])
+    basis_surface_pressure = {
+        2: {
+            2: np.array([11.0 + 0.0j, 12.0 + 0.0j]),
+            3: np.array([13.0 + 0.0j, 14.0 + 0.0j]),
+        },
+        3: {
+            2: np.array([21.0 + 0.0j, 22.0 + 0.0j]),
+            3: np.array([23.0 + 0.0j, 24.0 + 0.0j]),
+        },
+    }
+
+    def fail_sequential(*args, **kwargs):
+        raise AssertionError("the basis path should use solve_multi_source")
+
+    api = _patch_metal_api(monkeypatch, fail_sequential)
+
+    def fake_solve_multi_source(_mesh, freqs, source_dicts, config):
+        results = []
+        for sources in source_dicts:
+            tag = next(tag for tag, weight in sources.items() if weight != 0)
+            surface_avg = {
+                key: values.copy()
+                for key, values in basis_surface_pressure[tag].items()
+            }
+            result = _fake_solve_result(freqs)
+            result.impedance = surface_avg[tag].copy()
+            result.surface_pressure_avg = surface_avg
+            result.solver_log = [
+                {
+                    "frequency_hz": float(frequency),
+                    "impedance": surface_avg[tag][index],
+                }
+                for index, frequency in enumerate(freqs)
+            ]
+            result.config = config
+            results.append(result)
+        return results
+
+    api.solve_multi_source = fake_solve_multi_source
+    result = lem_to_bem.solve(
+        mesh,
+        {
+            "a": np.array([0.5 + 0.0j, 0.0 + 0.0j]),
+            "b": np.array([0.5 + 0.0j, 0.5 + 0.0j]),
+        },
+        {"a": [2], "b": [3]},
+        frequencies,
+        velocity_convention="solver",
+    )
+
+    # At 100 Hz both tags are driven, so tag 2 is the reference. At 200 Hz
+    # only tag 3 is driven, so the reference moves to tag 3 for that row.
+    expected = np.array([32.0 + 0.0j, 24.0 + 0.0j])
+    np.testing.assert_allclose(result.impedance, expected)
+    assert result.surface_pressure_avg is not None
+    assert result.impedance[0] == pytest.approx(result.surface_pressure_avg[2][0])
+    assert result.impedance[1] == pytest.approx(result.surface_pressure_avg[3][1])
+    np.testing.assert_allclose(
+        [entry["impedance"] for entry in result.solver_log[:2]], expected
+    )
+
+
 def test_multi_tag_aperture_applies_same_vn_to_each_tag(monkeypatch):
     """A multi-tag aperture writes the same v_n to every listed physical group."""
     mesh = _fake_unit_square_mesh()
@@ -752,13 +817,15 @@ def test_multi_source_superposition_matches_per_frequency_loop(monkeypatch):
         amplitudes = np.maximum(np.abs(pressure), 20.0e-6 * 1.0e-6)
         spl = 20.0 * np.log10(amplitudes / 20.0e-6)
         directivity = spl - spl[..., 2][..., None]
-        impedance = scale * (
-            source_2 * (2.0 + 3.0j) + source_3 * (-1.0 + 0.5j)
-        )
         surface_avg = {
             2: scale * (source_2 * (3.0 + 1.0j) + source_3 * (0.5 - 0.2j)),
             3: scale * (source_2 * (-0.4 + 0.8j) + source_3 * (2.0 - 1.0j)),
         }
+        impedance_tag = min(
+            (tag for tag, weight in sources.items() if weight != 0),
+            default=min(sources, default=2),
+        )
+        impedance = surface_avg[impedance_tag]
         surface_profile_2 = np.array([1.0, 2.0j, -1.0, 0.5 - 0.5j])
         surface_profile_3 = np.array([0.2j, 1.5, 0.3 - 0.1j, -2.0j])
         surface_pressure = scale[:, None] * (
