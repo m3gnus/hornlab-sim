@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # The package itself needs only numpy, and that is how most consumers install
+  # it. This job runs the suite on exactly that install, on every platform a
+  # consumer runs on.
+  #
+  # Two tests skip here, because they need something this package does not
+  # depend on: gmsh, and the Metal solver extra. Both cover the LEM->BEM seam,
+  # where the time-convention rule lives. A skip looks the same as a deleted
+  # test in a green summary, so the step after the suite fails unless exactly
+  # those two skipped -- no more, and no fewer.
+  tests:
+    name: Test suite (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install package
+        run: python -m pip install -e ".[dev]"
+      - name: Run the test suite
+        run: python -m pytest tests/ -q -rs --durations=10 --junitxml=pytest-report.xml
+      - name: Require exactly the two known skips
+        run: >-
+          python scripts/assert_skips.py pytest-report.xml
+          tests.test_lem_to_bem_parity_metal::test_multi_aperture_superposition_matches_per_frequency_metal_loop
+          tests.test_lem_to_bem_unit::test_native_pure_grid_three_triangles_and_three_vertices
+
+  # The same suite with gmsh and the Metal solver installed, so the two seam
+  # tests skipped above run for real. macOS is where the Metal solver's native
+  # helper builds and runs. Nothing may skip here.
+  seam:
+    name: LEM->BEM seam (macos-latest, metal + gmsh)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install package with the Metal extra and gmsh
+        run: python -m pip install -e ".[dev,metal]" gmsh
+      - name: Run the test suite
+        run: python -m pytest tests/ -q -rs --durations=10 --junitxml=pytest-report.xml
+      - name: Require no skips
+        run: python scripts/assert_skips.py pytest-report.xml

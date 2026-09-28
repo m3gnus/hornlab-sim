@@ -43,9 +43,8 @@ pytest tests          # 162 tests: 160 pass, 2 skip
 `[dev]` installs the `[fem]` extra too, because `tests/test_acoustic_fem.py`
 imports the FEM module directly and fails — it does not skip — without SciPy.
 
-**Two tests skip on a plain checkout, and this repository has no CI to notice
-if they ever stop existing.** Both need something that is not a dependency of
-this package:
+**Two tests skip on a plain checkout.** Both need something that is not a
+dependency of this package:
 
 | Test | Needs | Install |
 |---|---|---|
@@ -57,6 +56,12 @@ They cover the LEM→BEM seam, where the time-convention rule below is enforced
 see at all. Run them before changing anything at that seam. A skipped test and
 a deleted one look identical in a green summary, so check the count: a run that
 reports more than 2 skipped is measuring less than you think.
+
+CI (`.github/workflows/ci.yml`) runs the plain install on Linux, macOS and
+Windows and fails unless exactly those two tests skipped. A separate macOS job
+installs `gmsh` and the `[metal]` extra and fails on any skip, so the seam tests
+run on every push. `scripts/assert_skips.py` does the checking; update its
+expected list in the workflow when a skip is added or removed on purpose.
 
 ## Agent / user guidance
 
