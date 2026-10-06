@@ -215,10 +215,19 @@ def test_mms_and_mmd_bookkeeping_equivalence_and_guard():
     )
 
     bad_driver = _base_driver(Sd=0.05, Mmd=None, Mms=0.020)
-    with pytest.raises(ValueError, match="exceeds 30%"):
+    with pytest.raises(ValueError, match="exceeds 50%"):
         driver_coupling.coupled_cardioid_response(
             **_common_kwargs(freqs, driver=bad_driver)
         )
+
+    # A light large-cone pro woofer: the correction is ~40% of Mms, which is
+    # accepted and reported through the correction fraction.
+    light_driver = _base_driver(Sd=0.05, Mmd=None, Mms=0.032)
+    light = driver_coupling.coupled_cardioid_response(
+        **_common_kwargs(freqs, driver=light_driver)
+    )
+    fraction = light.mmd_correction_kg / 0.032
+    assert driver_coupling.MMD_CORRECTION_WARN < fraction < driver_coupling.MMD_CORRECTION_LIMIT
 
 
 def test_lr2_blocked_impedance_and_n_driver_referred_collapse():

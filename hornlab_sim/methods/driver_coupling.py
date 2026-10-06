@@ -300,6 +300,15 @@ def _solve_voltage_driven_driver(
     )
 
 
+#: Refuse an Mms whose free-air radiation-mass correction exceeds this share.
+#: The correction is the two-sided infinite-baffle air mass, an upper bound
+#: for a datasheet Mms measured in free air, so light large-cone pro drivers
+#: legitimately reach 30-50%; above half of Mms the Sd/Mms pair is suspect.
+MMD_CORRECTION_LIMIT = 0.50
+#: Above this share the correction is accepted but consumers should warn.
+MMD_CORRECTION_WARN = 0.30
+
+
 def _effective_mmd(
     driver: bandpass.Driver,
     derived: bandpass.Driver,
@@ -312,9 +321,10 @@ def _effective_mmd(
     sd = _positive_finite("driver.Sd", derived.Sd)
     radius = math.sqrt(sd / math.pi)
     correction = 2.0 * (8.0 / 3.0) * rho * radius ** 3
-    if correction > 0.30 * mms:
+    if correction > MMD_CORRECTION_LIMIT * mms:
         raise ValueError(
-            "Mms free-air radiation-mass correction exceeds 30% of Mms "
+            "Mms free-air radiation-mass correction exceeds "
+            f"{MMD_CORRECTION_LIMIT:.0%} of Mms "
             f"({correction / mms:.3f}); check Sd/Mms"
         )
     mmd = mms - correction
