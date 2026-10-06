@@ -230,6 +230,25 @@ def test_mms_and_mmd_bookkeeping_equivalence_and_guard():
     assert driver_coupling.MMD_CORRECTION_WARN < fraction < driver_coupling.MMD_CORRECTION_LIMIT
 
 
+def test_mms_correction_limit_boundaries():
+    """Accepted at exactly 30% and exactly 50% of Mms, refused just above 50%."""
+    freqs = np.array([50.0, 500.0])
+    sd, rho = 0.05, 1.2041
+    correction = 2.0 * (8.0 / 3.0) * rho * math.sqrt(sd / math.pi) ** 3
+
+    def respond(mms):
+        driver = _base_driver(Sd=sd, Mmd=None, Mms=mms)
+        return driver_coupling.coupled_cardioid_response(
+            **_common_kwargs(freqs, driver=driver, rho=rho)
+        )
+
+    for share in (driver_coupling.MMD_CORRECTION_WARN, driver_coupling.MMD_CORRECTION_LIMIT):
+        result = respond(correction / share)
+        assert result.mmd_correction_kg == pytest.approx(correction)
+    with pytest.raises(ValueError, match="exceeds 50%"):
+        respond(correction / driver_coupling.MMD_CORRECTION_LIMIT * (1 - 1e-9))
+
+
 def test_lr2_blocked_impedance_and_n_driver_referred_collapse():
     freqs = np.array([120.0, 600.0, 2400.0])
     omega = 2.0 * np.pi * freqs
