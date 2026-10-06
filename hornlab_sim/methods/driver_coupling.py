@@ -300,9 +300,9 @@ def _solve_voltage_driven_driver(
     )
 
 
-#: Refuse an Mms whose free-air radiation-mass correction exceeds this share.
-#: The correction is the two-sided infinite-baffle air mass, an upper bound
-#: for a datasheet Mms measured in free air, so light large-cone pro drivers
+#: Refuse an Mms whose radiation-mass correction exceeds this share. The
+#: correction, 2*(8/3)*rho*a**3 = 1.149*Sd**1.5 at rho = 1.2, is within 1.7% of
+#: Klippel's Mmd = Mms - 1.13*Sd**1.5 convention. Light large-cone pro drivers
 #: legitimately reach 30-50%; above half of Mms the Sd/Mms pair is suspect.
 MMD_CORRECTION_LIMIT = 0.50
 #: Above this share the correction is accepted but consumers should warn.
