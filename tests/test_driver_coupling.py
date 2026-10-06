@@ -232,6 +232,7 @@ def test_mms_and_mmd_bookkeeping_equivalence_and_guard():
 
 def test_mms_correction_limit_boundaries():
     """Accepted at exactly 30% and exactly 50% of Mms, refused just above 50%."""
+    assert (driver_coupling.MMD_CORRECTION_WARN, driver_coupling.MMD_CORRECTION_LIMIT) == (0.30, 0.50)
     freqs = np.array([50.0, 500.0])
     sd, rho = 0.05, 1.2041
     correction = 2.0 * (8.0 / 3.0) * rho * math.sqrt(sd / math.pi) ** 3
