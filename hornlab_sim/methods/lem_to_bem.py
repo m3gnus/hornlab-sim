@@ -64,7 +64,7 @@ obligation is recorded in this package's ``AGENTS.md`` and ``README.md``.
 from __future__ import annotations
 
 import warnings
-from dataclasses import replace
+from dataclasses import fields, replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Mapping, Union
@@ -93,6 +93,36 @@ VELOCITY_CONVENTIONS = ("engineering", "solver")
 #:                ``(3, n_vertices)`` and ``elements`` is ``(3, n_elements)``.
 #: ``"rows"``     ``(n_vertices, 3)`` and ``(n_elements, 3)``.
 MESH_ARRAY_LAYOUTS = ("rows", "columns")
+
+# Every result field must have an explicit aggregation policy. In particular,
+# dataclasses.replace must never silently retain a new physical field from one
+# frequency or unit source. Keep the schema test in sync with Metal SolveResult.
+_LINEAR_RESULT_FIELDS = (
+    "surface_pressure_complex", "surface_neumann_complex", "sphere_pressure_complex",
+)
+_POWER_RESULT_FIELDS = ("radiated_power_surface_w", "radiated_power_sphere_w")
+_AGGREGATED_RESULT_FIELDS = {
+    "frequencies_hz", "pressure_complex", "directivity_db", "impedance", "config",
+    "timings", "solver_log", "surface_pressure_avg", "native_diagnostics",
+    *_LINEAR_RESULT_FIELDS, *_POWER_RESULT_FIELDS,
+}
+_SHARED_RESULT_FIELDS = {
+    "observation_angles_deg", "observation_points", "observation_planes", "mesh_info",
+    "sphere_points", "sphere_theta_deg", "sphere_phi_deg",
+    "radiated_power_sphere_coverage_sr", "native_runtime",
+}
+
+
+def _check_result_aggregation_schema(result) -> None:
+    unknown = {item.name for item in fields(result)} - (
+        _AGGREGATED_RESULT_FIELDS | _SHARED_RESULT_FIELDS
+    )
+    if unknown:
+        raise ValueError(
+            "LEM-to-BEM cannot aggregate result fields "
+            f"{', '.join(sorted(unknown))}; update the aggregation policy "
+            "for this solver result schema before combining solves"
+        )
 
 
 def solve(
@@ -573,6 +603,7 @@ def _concat_results(per_freq_results, frequencies_hz):
         raise ValueError("no per-frequency results to concatenate")
 
     first = per_freq_results[0]
+    _check_result_aggregation_schema(first)
     _check_shared_sphere_geometry(
         per_freq_results,
         context="per-frequency",
@@ -595,25 +626,18 @@ def _concat_results(per_freq_results, frequencies_hz):
                 [r.surface_pressure_avg[tag] for r in per_freq_results], axis=0
             )
 
-    surface_pressure_complex = None
-    surface_fields = [
-        getattr(result, "surface_pressure_complex", None)
-        for result in per_freq_results
-    ]
-    if all(field is not None for field in surface_fields):
-        surface_pressure_complex = np.concatenate(surface_fields, axis=0)
-    elif any(field is not None for field in surface_fields):
-        raise ValueError("per-frequency surface-pressure fields differ")
-
-    sphere_pressure_complex = None
-    sphere_fields = [
-        getattr(result, "sphere_pressure_complex", None)
-        for result in per_freq_results
-    ]
-    if all(field is not None for field in sphere_fields):
-        sphere_pressure_complex = np.concatenate(sphere_fields, axis=0)
-    elif any(field is not None for field in sphere_fields):
-        raise ValueError("per-frequency sphere-pressure fields differ")
+    optional_fields = {}
+    for name in (*_LINEAR_RESULT_FIELDS, *_POWER_RESULT_FIELDS):
+        values = [getattr(result, name, None) for result in per_freq_results]
+        if all(value is not None for value in values):
+            optional_fields[name] = np.concatenate(values, axis=0)
+        elif any(value is not None for value in values):
+            raise ValueError(
+                f"per-frequency {name} fields differ; use the same solver settings "
+                "and retained-field options at every frequency"
+            )
+        elif hasattr(first, name):
+            optional_fields[name] = None
 
     native_diagnostics = [
         entry
@@ -621,11 +645,6 @@ def _concat_results(per_freq_results, frequencies_hz):
         for entry in getattr(result, "native_diagnostics", [])
     ]
 
-    optional_fields = {}
-    if hasattr(first, "surface_pressure_complex"):
-        optional_fields["surface_pressure_complex"] = surface_pressure_complex
-    if hasattr(first, "sphere_pressure_complex"):
-        optional_fields["sphere_pressure_complex"] = sphere_pressure_complex
     if hasattr(first, "native_diagnostics"):
         optional_fields["native_diagnostics"] = native_diagnostics
     return replace(
@@ -657,6 +676,7 @@ def _combine_basis_results(
     """Linearly combine unit-aperture results, including impedance per row."""
     if not basis_results:
         raise ValueError("no aperture basis results to combine")
+    _check_result_aggregation_schema(basis_results[0])
     weights = np.asarray(velocity_weights, dtype=np.complex128)
     frequencies = np.asarray(frequencies_hz, dtype=np.float64)
     expected = (frequencies.size, len(basis_results))
@@ -676,7 +696,10 @@ def _combine_basis_results(
         ]
         if optional and any(field is None for field in fields):
             if not all(field is None for field in fields):
-                raise ValueError(f"aperture basis {name} fields differ")
+                raise ValueError(
+                    f"aperture basis {name} fields differ; use the same solver settings "
+                    "and retained-field options for every aperture basis"
+                )
             return None
         values = np.stack(
             [np.asarray(field) for field in fields],
@@ -734,11 +757,15 @@ def _combine_basis_results(
         if len(impedance_rows) == frequencies.size:
             impedance = np.asarray(impedance_rows, dtype=np.complex128)
 
-    surface_pressure_complex = weighted_result_field(
-        "surface_pressure_complex", optional=True
-    )
-    sphere_pressure_complex = weighted_result_field(
-        "sphere_pressure_complex", optional=True
+    optional_fields = {
+        name: weighted_result_field(name, optional=True)
+        for name in _LINEAR_RESULT_FIELDS
+        if hasattr(first, name)
+    }
+    # Power is quadratic: basis powers omit interference cross terms. Results
+    # do not carry the integration data needed to reconstruct combined flux.
+    optional_fields.update(
+        {name: None for name in _POWER_RESULT_FIELDS if hasattr(first, name)}
     )
 
     solver_log = _combine_basis_solver_logs(
@@ -756,11 +783,6 @@ def _combine_basis_results(
             [entry["impedance"] for entry in solver_log],
             dtype=np.complex128,
         )
-    optional_fields = {}
-    if hasattr(first, "surface_pressure_complex"):
-        optional_fields["surface_pressure_complex"] = surface_pressure_complex
-    if hasattr(first, "sphere_pressure_complex"):
-        optional_fields["sphere_pressure_complex"] = sphere_pressure_complex
     return replace(
         first,
         frequencies_hz=np.array(frequencies, copy=True),

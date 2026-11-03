@@ -8,7 +8,7 @@ end-to-end when the native runtime is available.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, replace
 from types import SimpleNamespace
 
 import numpy as np
@@ -45,6 +45,9 @@ class _FakeSolveResult:
     solver_log: list[dict] = field(default_factory=list)
     surface_pressure_avg: dict[int, np.ndarray] | None = None
     surface_pressure_complex: np.ndarray | None = None
+    surface_neumann_complex: np.ndarray | None = None
+    radiated_power_surface_w: np.ndarray | None = None
+    radiated_power_sphere_w: np.ndarray | None = None
     sphere_pressure_complex: np.ndarray | None = None
     sphere_points: np.ndarray | None = None
     sphere_theta_deg: np.ndarray | None = None
@@ -1023,6 +1026,121 @@ def test_concat_results_rejects_different_sphere_geometry():
 
     with pytest.raises(ValueError, match="sphere geometry"):
         _concat_results([r1, r2], frequencies_hz=[100.0, 200.0])
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["surface_neumann_complex", "radiated_power_surface_w", "radiated_power_sphere_w"],
+)
+def test_concat_results_preserves_every_frequency_row(name):
+    results = [_fake_solve_result([frequency]) for frequency in (100.0, 200.0)]
+    values = (
+        [np.array([[3j, 4j]]), np.array([[6j, 8j]])]
+        if name == "surface_neumann_complex"
+        else [np.array([5.0]), np.array([20.0])]
+    )
+    for result, value in zip(results, values):
+        setattr(result, name, value)
+
+    combined = _concat_results(results, [100.0, 200.0])
+
+    np.testing.assert_array_equal(getattr(combined, name), np.concatenate(values))
+    assert getattr(combined, name).shape[0] == combined.frequencies_hz.size
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["surface_neumann_complex", "radiated_power_surface_w", "radiated_power_sphere_w"],
+)
+def test_concat_results_rejects_partially_missing_physical_fields(name):
+    results = [_fake_solve_result([frequency]) for frequency in (100.0, 200.0)]
+    setattr(results[0], name, np.array([1.0]))
+
+    with pytest.raises(ValueError, match=name):
+        _concat_results(results, [100.0, 200.0])
+
+
+def _combine_test_basis(results, weights):
+    return lem_to_bem._combine_basis_results(
+        results,
+        np.asarray(weights, dtype=complex),
+        results[0].frequencies_hz,
+        combined_config=_FakeConfig(),
+        aperture_indices={str(index): index for index in range(len(results))},
+        tag_owners={index + 2: str(index) for index in range(len(results))},
+    )
+
+
+def test_basis_combination_weights_neumann_traces_like_pressure():
+    results = [_fake_solve_result([100.0, 200.0]) for _ in range(2)]
+    for index, result in enumerate(results):
+        result.surface_pressure_complex = np.array([[1.0, 2j], [2.0, 3j]]) * (index + 1)
+        result.surface_neumann_complex = np.array([[3j, 4j], [5j, 6j]]) * (index + 1)
+        result.solver_log = [{"frequency_hz": f} for f in result.frequencies_hz]
+    weights = np.array([[2.0, 0.0], [1j, -0.5]])
+    original = [result.surface_neumann_complex.copy() for result in results]
+
+    combined = _combine_test_basis(results, weights)
+
+    np.testing.assert_allclose(
+        combined.surface_neumann_complex,
+        [[6j, 8j], [-5.0 - 5j, -6.0 - 6j]],
+    )
+    np.testing.assert_allclose(
+        combined.surface_pressure_complex,
+        [[2.0, 4j], [-2.0 + 2j, -3.0 - 3j]],
+    )
+    for result, before in zip(results, original):
+        np.testing.assert_array_equal(result.surface_neumann_complex, before)
+
+
+@pytest.mark.parametrize("weights", [[[2.0, 0.0]], [[1.0, 1.0]], [[1.0, -1.0]]])
+def test_basis_combination_does_not_inherit_or_sum_basis_power(weights):
+    # Identical bases reinforce or cancel; their separate powers omit cross terms.
+    result = _fake_solve_result([100.0])
+    result.pressure_complex[:] = 1.0
+    result.radiated_power_surface_w = np.array([5.0])
+    result.radiated_power_sphere_w = np.array([7.0])
+    result.solver_log = [{"frequency_hz": 100.0}]
+
+    combined = _combine_test_basis([result, replace(result)], weights)
+
+    np.testing.assert_allclose(combined.pressure_complex, sum(weights[0]))
+    assert combined.radiated_power_surface_w is None
+    assert combined.radiated_power_sphere_w is None
+    np.testing.assert_array_equal(result.radiated_power_surface_w, [5.0])
+
+
+def test_basis_combination_rejects_partially_missing_neumann_traces():
+    result = _fake_solve_result([100.0])
+    result.solver_log = [{"frequency_hz": 100.0}]
+    other = replace(result, surface_neumann_complex=np.array([[3j]]))
+
+    with pytest.raises(ValueError, match="surface_neumann_complex"):
+        _combine_test_basis([result, other], [[1.0, 1.0]])
+
+
+@pytest.mark.parametrize("aggregation", ["concat", "basis"])
+def test_result_aggregation_refuses_unclassified_fields(aggregation):
+    @dataclass
+    class ExtendedResult(_FakeSolveResult):
+        new_physical_field: np.ndarray | None = None
+
+    result = _fake_solve_result([100.0])
+    extended = ExtendedResult(**{item.name: getattr(result, item.name) for item in fields(result)})
+    extended.solver_log = [{"frequency_hz": 100.0}]
+    with pytest.raises(ValueError, match="new_physical_field"):
+        if aggregation == "concat":
+            _concat_results([extended], [100.0])
+        else:
+            _combine_test_basis([extended], [[2.0]])
+
+
+def test_result_aggregation_covers_native_result_schema():
+    native = pytest.importorskip("hornlab_metal_bem.result")
+    declared = {item.name for item in fields(native.SolveResult)}
+
+    assert declared == lem_to_bem._AGGREGATED_RESULT_FIELDS | lem_to_bem._SHARED_RESULT_FIELDS
 
 
 # ---------------------------------------------------------------------------
