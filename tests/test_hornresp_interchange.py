@@ -6,10 +6,26 @@ import pytest
 from hornlab_sim.hornresp import (
     build_from_hornresp,
     export_bp4,
+    export_bp6s,
     parse_config,
     parse_response,
 )
 from hornlab_sim.methods.bandpass import Driver, Port
+
+
+@pytest.mark.parametrize("feature", ["front split port", "rear split port", "LR-2"])
+def test_export_rejects_unrepresentable_models_before_writing(tmp_path, feature):
+    driver = Driver(Sd=0.013, Bl=5.8, Re=5.6, Mms=0.018, Cms=0.85e-3, Rms=1.2)
+    front = Port(area=0.002, length=0.02, n_parallel=4 if feature == "front split port" else 1)
+    rear = Port(area=0.002, length=0.02, n_parallel=4 if feature == "rear split port" else 1)
+    if feature == "LR-2":
+        driver.le2_h, driver.re2_ohm = 0.001, 2.0
+    path = tmp_path / "design.txt"
+    path.write_bytes(b"existing design")
+    match = "LR-2.*plain Re/Le" if feature == "LR-2" else "n_parallel=4.*single.*port"
+    with pytest.raises(ValueError, match=match):
+        export_bp6s(driver, 0.005, front, 0.005, rear, path)
+    assert path.read_bytes() == b"existing design"
 
 
 def test_hornresp_bp4_export_parse_round_trip(tmp_path):

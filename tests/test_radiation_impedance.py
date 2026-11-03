@@ -558,6 +558,35 @@ def test_terminated_chamber_port_branch_matches_lumped_network():
     )
 
 
+@pytest.mark.parametrize("length", [0.0, 0.02])
+def test_terminated_branch_zero_series_is_pressure_release(length):
+    freqs = np.array([100.0, 200.0, 300.0])
+    # Also exercise exact cancellation of finite port and termination reactances.
+    load = -1j * (2 * np.pi * freqs) * 1.2 * length / 5e-4
+    load[-1] += 10.0
+    with np.errstate(divide="raise", invalid="raise"):
+        result = radiation_impedance.terminated_chamber_port_branch(
+            freqs, load, chamber_volume_m3=0.005, port_area_m2=5e-4,
+            port_length_m=length, rho=1.2, c=340.0,
+        )
+    np.testing.assert_array_equal(result.input_impedance[:2], [0j, 0j])
+    np.testing.assert_array_equal(result.exit_to_input_volume_velocity_ratio[:2], [1, 1])
+    denominator = 1 + 1j * (2 * np.pi * freqs[-1]) * (0.005 / (1.2 * 340**2)) * 10
+    assert result.input_impedance[-1] == pytest.approx(10 / denominator)
+    assert result.exit_to_input_volume_velocity_ratio[-1] == pytest.approx(1 / denominator)
+
+
+def test_terminated_branch_lossless_resonance_remains_a_pole():
+    freqs = np.array([1.0 / (2 * np.pi)])  # omega == 1, compliance == 1
+    with np.errstate(divide="ignore", invalid="ignore"):
+        result = radiation_impedance.terminated_chamber_port_branch(
+            freqs, np.array([1j]), chamber_volume_m3=1.0,
+            port_area_m2=1.0, port_length_m=0.0, rho=1.0, c=1.0,
+        )
+    assert not np.isfinite(result.input_impedance[0])
+    assert not np.isfinite(result.exit_to_input_volume_velocity_ratio[0])
+
+
 def test_collapse_aperture_matrix_area_weights_subtags():
     freqs = np.array([100.0])
     matrix = np.zeros((1, 3, 3), dtype=np.complex128)

@@ -21,6 +21,23 @@ from hornlab_sim.methods.port_acoustics import (
 )
 
 
+@pytest.mark.parametrize("n, lr2, rg", [(1, False, 0.0), (2, True, 0.5)])
+def test_zero_drive_preserves_bandpass_electrical_impedance(n, lr2, rg):
+    driver = Driver(Sd=0.013, Bl=5.8, Re=5.6, Le=0.00025, Mms=0.018,
+                    Cms=0.00085, Rms=1.2, n_drivers=n,
+                    le2_h=0.001 if lr2 else None, re2_ohm=2.0 if lr2 else None)
+    kwargs = dict(driver=driver, front_chamber=Chamber(volume=0.005,
+                  port=Port(area=0.002, length=0.02)), rear_chamber=Chamber(volume=0.01),
+                  freq=np.array([50.0, 100.0, 300.0]), Rg=rg)
+    driven = simulate(**kwargs, v_g=1.0)
+    with np.errstate(divide="raise", invalid="raise"):
+        muted = simulate(**kwargs, v_g=0.0)
+    np.testing.assert_allclose(muted.Z_electrical, driven.Z_electrical, rtol=1e-14)
+    np.testing.assert_array_equal(muted.U_driver, 0)
+    np.testing.assert_array_equal(muted.U_front_port, 0)
+    np.testing.assert_array_equal(muted.cone_excursion_mm, 0)
+
+
 def test_ingard_interior_correction_matches_measured_volume_shift_regression():
     """Measured clay-volume regression from an archived build thread.
 
