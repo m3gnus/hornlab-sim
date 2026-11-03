@@ -44,7 +44,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 from hornlab_sim.methods.bandpass import Chamber, Driver, Port
 
@@ -68,6 +67,7 @@ class HornrespExport:
     wiring: str = "P"                # "P" parallel or "S" series, when n>1
 
     def render(self) -> str:
+        self._validate_representability()
         d = self.driver.derive()
         f = self.front_chamber
         r = self.rear_chamber
@@ -100,7 +100,7 @@ class HornrespExport:
         # mimic Hornresp's typical 2-decimal output.
         lines = []
         push = lines.append
-        push(f"ID = 55.30")
+        push("ID = 55.30")
         push("")
         push(f"Comment = {self.comment or 'Lumped BP export'}")
         push("")
@@ -261,6 +261,22 @@ class HornrespExport:
         # plus ISO-8859-1 encoding. Use a literal "\r\n" join here so
         # the output matches a native Hornresp export byte-for-byte.
         return "\r\n".join(lines) + "\r\n"
+
+    def _validate_representability(self) -> None:
+        """Refuse features this exporter cannot preserve in Hornresp text."""
+        for name, chamber in (("front", self.front_chamber), ("rear", self.rear_chamber)):
+            if chamber.port is not None and chamber.port.n_parallel != 1:
+                raise ValueError(
+                    f"Hornresp export cannot preserve {name} port "
+                    f"n_parallel={chamber.port.n_parallel}; use a single physical "
+                    "port model for export or keep the split-port design in hornlab-sim"
+                )
+        if self.driver.le2_h is not None or self.driver.re2_ohm is not None:
+            raise ValueError(
+                "Hornresp export cannot preserve an LR-2 electrical branch; "
+                "use a plain Re/Le driver model for export or keep the LR-2 "
+                "design in hornlab-sim"
+            )
 
     def write(self, path: Path | str) -> Path:
         p = Path(path)

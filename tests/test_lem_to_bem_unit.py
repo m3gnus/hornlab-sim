@@ -31,8 +31,16 @@ class _FakeVelocityMode:
 @dataclass
 class _FakeConfig:
     mesh_scale: float = 1.0
+    mesh_validate: bool = True
+    mesh_merge_tol: float = 1e-8
+    mesh_repair_normals: bool = False
+    native_symmetry_plane: str | None = None
+    aperture_tag: int = 2
     velocity_mode: str = _FakeVelocityMode.ACCELERATION
     velocity_sources: dict[int, complex] = field(default_factory=dict)
+    on_frequency_result: object = None
+    progress_callback: object = None
+    velocity_source_callback: object = None
 
 
 @dataclass
@@ -103,6 +111,90 @@ def _fake_unit_square_mesh():
     physical_tags = np.array([2, 3], dtype=np.int32)
     info = SimpleNamespace(n_triangles=2)
     return SimpleNamespace(grid=grid, physical_tags=physical_tags, info=info)
+
+
+@pytest.mark.parametrize("stop_value, stop_at, completed", [
+    (False, 100.0, 1), (False, 200.0, 2), (None, 200.0, 3), (0, 200.0, 3),
+])
+def test_outer_sweep_callbacks_use_global_indices_and_honor_exact_false(
+    monkeypatch, stop_value, stop_at, completed,
+):
+    calls, callbacks, progress = [], [], []
+
+    def backend(mesh, freqs, config):
+        done = []
+        for index, frequency in enumerate(freqs):
+            calls.append(frequency)
+            done.append(frequency)
+            if config.progress_callback is not None:
+                config.progress_callback(index, len(freqs), frequency)
+            if config.on_frequency_result is not None:
+                if config.on_frequency_result(index, frequency, {"done": frequency}) is False:
+                    break
+        return _fake_solve_result(freqs=done)
+
+    def on_result(index, frequency, entry):
+        callbacks.append((index, frequency, entry))
+        return stop_value if frequency == stop_at else None
+
+    api = _patch_metal_api(monkeypatch, backend)
+    api.solve_multi_source = lambda *args: pytest.fail("callbacks require sequential route")
+    config = _FakeConfig(
+        on_frequency_result=on_result,
+        progress_callback=lambda *args: progress.append(args),
+    )
+    freqs = np.array([100.0, 200.0, 300.0])
+    result = lem_to_bem.solve(
+        _fake_unit_square_mesh(), {"a": np.ones(3)}, {"a": [2]}, freqs, config,
+    )
+    expected = list(freqs[:completed])
+    assert calls == expected
+    assert callbacks == [(i, f, {"done": f}) for i, f in enumerate(expected)]
+    assert progress == [(i, 3, f) for i, f in enumerate(expected)]
+    np.testing.assert_array_equal(result.frequencies_hz, expected)
+    assert result.pressure_complex.shape[0] == completed
+    assert len(result.solver_log[-1]["lem_to_bem"]) == completed
+    assert config.on_frequency_result is on_result
+
+
+def test_velocity_callback_conflict_rejected_before_backend_or_mesh_loading(monkeypatch):
+    def forbidden(*args, **kwargs):
+        pytest.fail("conflicting source owners must be rejected before backend work")
+
+    api = _patch_metal_api(monkeypatch, forbidden)
+    api.load_mesh = forbidden
+    config = _FakeConfig(velocity_source_callback=lambda frequency: {2: 7j})
+    with pytest.raises(ValueError, match="velocity_source_callback.*remove"):
+        lem_to_bem.solve("mesh.msh", {"a": np.array([1.0])}, {"a": [2]},
+                         np.array([100.0]), config)
+    assert config.velocity_source_callback(100.0) == {2: 7j}
+
+
+@pytest.mark.parametrize("path_input", [True, False])
+def test_path_mesh_forwards_loader_options_and_preloaded_mesh_is_unchanged(
+    monkeypatch, tmp_path, path_input,
+):
+    mesh = _fake_unit_square_mesh()
+    loads = []
+
+    def backend(loaded, freqs, config):
+        assert loaded is mesh
+        return _fake_solve_result(freqs=freqs)
+
+    api = _patch_metal_api(monkeypatch, backend)
+    def loader(path, **kwargs):
+        loads.append((path, kwargs))
+        return mesh
+    api.load_mesh = loader
+    config = _FakeConfig(mesh_scale=0.001, mesh_validate=False,
+                         mesh_merge_tol=0.002, mesh_repair_normals=True,
+                         native_symmetry_plane="xz", aperture_tag=3)
+    path = tmp_path / "external.msh"
+    lem_to_bem.solve(path if path_input else mesh, {"a": np.ones(1)}, {"a": [2]},
+                     np.array([100.0]), config)
+    assert loads == ([(path, dict(scale=0.001, validate=False, merge_tol=0.002,
+                                 repair_normals=True, native_symmetry_plane="xz",
+                                 aperture_tag=3))] if path_input else [])
 
 
 # ---------------------------------------------------------------------------

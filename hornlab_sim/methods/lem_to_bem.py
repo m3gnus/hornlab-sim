@@ -156,7 +156,10 @@ def solve(
         Solver configuration from ``hornlab_metal_bem``. If omitted, a
         native Metal ``COMPLEX_K`` config is used. The coupling
         layer always overrides ``velocity_mode`` and ``velocity_sources``
-        per frequency.
+        per frequency. A ``velocity_source_callback`` conflicts with the
+        supplied LEM drive and must be removed before calling this API.
+        Result and progress callbacks use indices in the full requested sweep;
+        returning exactly ``False`` from ``on_frequency_result`` stops it.
     area_tolerance : float, default 0.05
         Per-aperture area-spread threshold for the diagnostic warning. The
         spread is measured between apertures; useful for catching a
@@ -202,7 +205,7 @@ def solve(
         Aperture name mismatch between ``lem_velocities`` and
         ``aperture_tags``, velocity array shape mismatch with frequencies,
         overlapping physical tags, zero-area aperture, or an unknown
-        ``velocity_convention``.
+        ``velocity_convention``, or a conflicting ``velocity_source_callback``.
 
     Notes
     -----
@@ -262,13 +265,16 @@ def solve(
     api = _metal_api(config)
     if config is None:
         config = api.default_config("complex_k")
+    if getattr(config, "velocity_source_callback", None) is not None:
+        raise ValueError(
+            "velocity_source_callback conflicts with lem_velocities; remove "
+            "the callback from SolveConfig and supply the drive through "
+            "lem_velocities"
+        )
 
     # ----- Load mesh once -------------------------------------------------
 
-    if isinstance(mesh, (str, Path)):
-        loaded = api.load_mesh(mesh, scale=config.mesh_scale)
-    else:
-        loaded = mesh
+    loaded = _load_mesh(api, mesh, config)
 
     # ----- Compute aperture face areas -----------------------------------
 
@@ -333,7 +339,6 @@ def solve(
         for name in (
             "on_frequency_result",
             "progress_callback",
-            "velocity_source_callback",
         )
     )
     if solve_multi is not None and not has_callbacks:
@@ -363,6 +368,7 @@ def solve(
         )
     else:
         per_freq_results = []
+        stop_requested = False
         for index, frequency in enumerate(freqs):
             sources: dict[int, complex] = {}
             for name, tags in aperture_tags.items():
@@ -372,11 +378,33 @@ def solve(
                 for tag in tags:
                     sources[int(tag)] = velocity
             freq_config = replace(base_config, velocity_sources=sources)
+            if base_config.progress_callback is not None:
+                def progress(
+                    local_index, local_total, frequency_hz, *, outer_index=index,
+                ):
+                    base_config.progress_callback(outer_index, n_freq, frequency_hz)
+
+                freq_config = replace(freq_config, progress_callback=progress)
+            if base_config.on_frequency_result is not None:
+                def on_result(local_index, frequency_hz, entry, *, outer_index=index):
+                    nonlocal stop_requested
+                    decision = base_config.on_frequency_result(
+                        outer_index, frequency_hz, entry,
+                    )
+                    if decision is False:
+                        stop_requested = True
+                    return decision
+
+                freq_config = replace(freq_config, on_frequency_result=on_result)
             single = api.solve_frequencies(
                 loaded, [float(frequency)], freq_config
             )
             per_freq_results.append(single)
-        aggregated = _concat_results(per_freq_results, freqs)
+            if stop_requested:
+                break
+        completed_count = len(per_freq_results)
+        aggregated = _concat_results(per_freq_results, freqs[:completed_count])
+        per_freq_log = per_freq_log[:completed_count]
 
     aggregated.solver_log.append({"lem_to_bem": per_freq_log})
     return aggregated
@@ -385,6 +413,21 @@ def solve(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _load_mesh(api, mesh, config):
+    """Resolve a path with all Metal mesh options; preserve preloaded meshes."""
+    if not isinstance(mesh, (str, Path)):
+        return mesh
+    return api.load_mesh(
+        mesh,
+        scale=config.mesh_scale,
+        validate=config.mesh_validate,
+        merge_tol=config.mesh_merge_tol,
+        repair_normals=config.mesh_repair_normals,
+        native_symmetry_plane=config.native_symmetry_plane,
+        aperture_tag=config.aperture_tag,
+    )
 
 
 def _to_solver_convention(
