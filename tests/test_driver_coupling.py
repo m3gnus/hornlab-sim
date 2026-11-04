@@ -23,20 +23,6 @@ def _base_driver(**overrides):
     return Driver(**params)
 
 
-def test_massless_pressure_release_port_keeps_coupled_driver_response_finite():
-    freqs = np.array([100.0, 200.0])
-    with np.errstate(divide="raise", invalid="raise"):
-        result = driver_coupling.coupled_cardioid_response(
-            **_common_kwargs(freqs, termination_load=np.zeros(2, dtype=complex),
-                             port_length_m=0.0, interior_end_correction_length_m=0.0,
-                             series_resistance_pa_s_m3=0.0),
-        )
-    np.testing.assert_array_equal(result.port_to_cone_ratio, [1, 1])
-    np.testing.assert_array_equal(result.port_volume_velocity, result.cone_volume_velocity)
-    assert np.all(np.isfinite(result.cone_volume_velocity))
-    assert np.all(np.isfinite(result.electrical_input_impedance))
-
-
 def _common_kwargs(freqs, **overrides):
     kwargs = dict(
         frequencies_hz=freqs,

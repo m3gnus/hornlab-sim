@@ -27,7 +27,6 @@ from numpy.typing import NDArray
 from .lem_to_bem import (
     METAL_EXTRA_INSTALL_HINT,
     _aperture_face_areas,
-    _load_mesh,
     _triangle_face_areas,
 )
 
@@ -150,7 +149,18 @@ def solve_aperture_matrix(
     if config is None:
         config = api.default_config(None)
 
-    loaded = _load_mesh(api, mesh, config)
+    if isinstance(mesh, (str, Path)):
+        loaded = api.load_mesh(
+            mesh,
+            scale=config.mesh_scale,
+            validate=config.mesh_validate,
+            merge_tol=config.mesh_merge_tol,
+            repair_normals=config.mesh_repair_normals,
+            native_symmetry_plane=config.native_symmetry_plane,
+            aperture_tag=config.aperture_tag,
+        )
+    else:
+        loaded = mesh
 
     aperture_area_m2 = _aperture_face_areas(
         loaded, aperture_tags, mesh_array_layout=mesh_array_layout
@@ -388,17 +398,10 @@ def terminated_chamber_port_branch(
     y_chamber = 1j * omega * compliance
     z_port = 1j * omega * rho_f * (length + interior) / area
     z_series = series_resistance + z_port + load
-    # A zero series branch is a pressure-release short, with Zin=0 and
-    # U_exit/U_in=1. Evaluate the existing admittance algebra only elsewhere
-    # to preserve finite-input results bit for bit, including physical poles.
-    shorted = z_series == 0
-    y_series = np.zeros_like(z_series)
-    np.divide(1.0, z_series, out=y_series, where=~shorted)
+    y_series = 1.0 / z_series
     total_admittance = y_chamber + y_series
-    zin = np.zeros_like(z_series)
-    transfer_ratio = np.ones_like(z_series)
-    np.divide(1.0, total_admittance, out=zin, where=~shorted)
-    np.divide(y_series, total_admittance, out=transfer_ratio, where=~shorted)
+    zin = 1.0 / total_admittance
+    transfer_ratio = y_series / total_admittance
 
     return TerminatedBranchResult(
         frequencies_hz=freqs,

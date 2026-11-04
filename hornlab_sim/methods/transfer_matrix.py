@@ -22,15 +22,15 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, Optional, Sequence, Union
+from typing import Optional, Sequence, Union
 
 import numpy as np
 
 from .bandpass import RHO, C_SOUND, Port
 from .port_acoustics import (
-    CP_AIR as CP_AIR,
+    CP_AIR,
     GAMMA_AIR,
-    KAPPA_AIR as KAPPA_AIR,
+    KAPPA_AIR,
     MU_AIR,
     PRANDTL_AIR,
 )
@@ -47,17 +47,15 @@ def _complex_wavenumber(
     area: float,
     perimeter: float,
     losses: bool,
-    rho: float = RHO,
-    c: float = C_SOUND,
 ) -> np.ndarray:
     """Plane-wave wavenumber, optionally with Kirchhoff viscothermal losses."""
-    k0 = omega / c
+    k0 = omega / C_SOUND
     if not losses or perimeter <= 0 or area <= 0:
         return k0
 
     r_h = 2.0 * area / perimeter  # hydraulic radius
     omega_safe = np.where(omega == 0, 1.0, omega)
-    delta_v = np.sqrt(2.0 * MU_AIR / (rho * omega_safe))
+    delta_v = np.sqrt(2.0 * MU_AIR / (RHO * omega_safe))
     delta_t = delta_v / math.sqrt(PRANDTL)
     alpha = (delta_v / (2.0 * r_h)) * (1.0 + (GAMMA - 1.0) * delta_t / delta_v)
     k = k0 * (1.0 + (1.0 - 1j) * alpha)
@@ -70,9 +68,6 @@ def uniform_tube_matrix(
     freq: np.ndarray,
     perimeter: float = 0.0,
     losses: bool = True,
-    *,
-    rho: float = RHO,
-    c: float = C_SOUND,
 ) -> np.ndarray:
     """2×2 transfer matrix for a uniform tube segment.
 
@@ -91,13 +86,10 @@ def uniform_tube_matrix(
         Wetted perimeter (m) for viscothermal losses.  0 → lossless.
     losses : bool
         Enable viscothermal wall losses.
-    rho, c : float
-        Air density (kg/m³) and sound speed (m/s) used for propagation and
-        characteristic impedance. Other transport constants remain at 20 °C.
     """
     omega = 2.0 * math.pi * freq
-    k = _complex_wavenumber(omega, area, perimeter, losses, rho=rho, c=c)
-    Z0 = rho * c / area  # characteristic acoustic impedance
+    k = _complex_wavenumber(omega, area, perimeter, losses)
+    Z0 = RHO * C_SOUND / area  # characteristic acoustic impedance
 
     kL = k * length
     cos_kL = np.cos(kL)
@@ -163,9 +155,6 @@ def input_impedance(
 def radiation_impedance_baffled(
     area: float,
     freq: np.ndarray,
-    *,
-    rho: float = RHO,
-    c: float = C_SOUND,
 ) -> np.ndarray:
     """Baffled-piston radiation impedance (low-ka approximation).
 
@@ -174,24 +163,23 @@ def radiation_impedance_baffled(
     """
     omega = 2.0 * math.pi * freq
     a_eq = math.sqrt(area / math.pi)
-    R_rad = rho * omega**2 / (2.0 * math.pi * c)
-    X_rad = 1j * omega * rho * 0.85 * a_eq / area
+    k = omega / C_SOUND
+
+    R_rad = RHO * omega**2 / (2.0 * math.pi * C_SOUND)
+    X_rad = 1j * omega * RHO * 0.85 * a_eq / area
     return R_rad + X_rad
 
 
 def radiation_impedance_unbaffled(
     area: float,
     freq: np.ndarray,
-    *,
-    rho: float = RHO,
-    c: float = C_SOUND,
 ) -> np.ndarray:
     """Unbaffled (flanged-free) piston radiation impedance (low-ka approx)."""
     omega = 2.0 * math.pi * freq
     a_eq = math.sqrt(area / math.pi)
 
-    R_rad = rho * omega**2 / (4.0 * math.pi * c)
-    X_rad = 1j * omega * rho * 0.61 * a_eq / area
+    R_rad = RHO * omega**2 / (4.0 * math.pi * C_SOUND)
+    X_rad = 1j * omega * RHO * 0.61 * a_eq / area
     return R_rad + X_rad
 
 
@@ -206,8 +194,6 @@ def duct_input_impedance(
     termination: Union[str, np.ndarray] = "rigid",
     termination_area: float = 0.0,
     losses: bool = True,
-    rho: float = RHO,
-    c: float = C_SOUND,
 ) -> np.ndarray:
     """Input impedance of an arbitrary segmented duct.
 
@@ -235,10 +221,6 @@ def duct_input_impedance(
         or custom array terminations.
     losses : bool
         Enable viscothermal wall losses.
-    rho, c : float
-        Air density (kg/m³) and sound speed (m/s) for the full duct and any
-        built-in radiation termination. Custom termination arrays must already
-        use these same air properties.
 
     Returns
     -------
@@ -257,8 +239,6 @@ def duct_input_impedance(
         freq,
         perimeter=perimeters[0],
         losses=losses,
-        rho=rho,
-        c=c,
     )
     for i in range(1, n):
         segment = uniform_tube_matrix(
@@ -267,8 +247,6 @@ def duct_input_impedance(
             freq,
             perimeter=perimeters[i],
             losses=losses,
-            rho=rho,
-            c=c,
         )
         T = np.matmul(T, segment)
 
@@ -277,12 +255,10 @@ def duct_input_impedance(
             Z_load = None
         elif termination == "baffled":
             Z_load = radiation_impedance_baffled(
-                termination_area if termination_area > 0 else areas[-1], freq,
-                rho=rho, c=c)
+                termination_area if termination_area > 0 else areas[-1], freq)
         elif termination == "unbaffled":
             Z_load = radiation_impedance_unbaffled(
-                termination_area if termination_area > 0 else areas[-1], freq,
-                rho=rho, c=c)
+                termination_area if termination_area > 0 else areas[-1], freq)
         else:
             raise ValueError(f"unknown termination {termination!r}")
     else:
@@ -303,8 +279,6 @@ def slot_pocket_impedance(
     n_segments: int = 30,
     losses: bool = True,
     termination: str = "rigid",
-    rho: float = RHO,
-    c: float = C_SOUND,
 ) -> np.ndarray:
     """TMM input impedance of one slot pocket.
 
@@ -337,12 +311,12 @@ def slot_pocket_impedance(
 
     return duct_input_impedance(
         areas, perimeters, lengths, freq,
-        termination=termination, losses=losses, rho=rho, c=c,
+        termination=termination, losses=losses,
     )
 
 
 def slot_pocket_impedance_from_params(
-    params: Any,
+    params: "CabinetParams",
     freq: np.ndarray,
     **kwargs,
 ) -> np.ndarray:
@@ -371,17 +345,10 @@ class TMMLoad:
     If a ``port`` is provided, the port admittance is added in parallel
     (same topology as ``Chamber.load_impedance``): the cavity and port
     share the same face.
-
-    ``rho`` and ``c`` record the fixed air properties used to build ``_Z_tmm``.
-    For arbitrary precomputed arrays the caller must supply that provenance;
-    omitted values declare the legacy defaults. A runtime mismatch is rejected:
-    rebuild the TMM impedance and load for the requested environment.
     """
     _Z_tmm: np.ndarray
     _omega_ref: np.ndarray
     port: Optional[Port] = None
-    rho: float = RHO
-    c: float = C_SOUND
 
     def load_impedance(
         self,
@@ -390,12 +357,6 @@ class TMMLoad:
         rho: float = RHO,
         c: float = C_SOUND,
     ) -> np.ndarray:
-        if rho != self.rho or c != self.c:
-            raise ValueError(
-                f"TMMLoad air properties (rho={rho}, c={c}) differ from "
-                f"construction (rho={self.rho}, c={self.c}); rebuild the TMM "
-                "impedance and load with the requested rho and c"
-            )
         omega_array = np.asarray(omega)
         omega_ref = np.asarray(self._omega_ref)
         if len(omega_array) != len(omega_ref):
@@ -429,16 +390,14 @@ def make_slot_tmm_load(
     exit_port: Optional[Port] = None,
     n_segments: int = 30,
     losses: bool = True,
-    rho: float = RHO,
-    c: float = C_SOUND,
 ) -> TMMLoad:
-    """Build a fixed-environment slot load; use the same rho/c in simulate()."""
+    """Build a TMMLoad for one slot pocket + optional exit port."""
     omega = 2.0 * math.pi * freq
     Z_pocket = slot_pocket_impedance(
         slot_opening_W_mm, slot_height_mm, apex_depth_mm, apex_width_mm,
-        freq, n_segments=n_segments, losses=losses, rho=rho, c=c,
+        freq, n_segments=n_segments, losses=losses,
     )
-    return TMMLoad(_Z_tmm=Z_pocket, _omega_ref=omega, port=exit_port, rho=rho, c=c)
+    return TMMLoad(_Z_tmm=Z_pocket, _omega_ref=omega, port=exit_port)
 
 
 __all__ = [

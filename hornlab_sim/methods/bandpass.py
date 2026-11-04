@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import NamedTuple, Optional
+from typing import Optional
 
 import numpy as np
 
@@ -131,51 +131,6 @@ class Driver:
             )
             z = z + z_lr2
         return z + Rg
-
-
-class _ParallelDriverTerms(NamedTuple):
-    sd_eff: float
-    mas_eff: float
-    cas_eff: float
-    ras_eff: float
-    electrical_driver: Driver
-    z_e: np.ndarray
-    z_em: np.ndarray
-    z_drv: np.ndarray
-    p_g: np.ndarray
-
-
-def _parallel_driver_terms(driver, omega, *, moving_mass, voltage, Rg):
-    """Reduce derived parallel drivers using the caller's Mms or Mmd choice."""
-    n = driver.n_drivers
-    sd_eff = driver.Sd * n
-    mas_eff = moving_mass / (n * driver.Sd ** 2)
-    cas_eff = n * driver.Cms * driver.Sd ** 2
-    ras_eff = driver.Rms / (n * driver.Sd ** 2)
-    electrical_driver = Driver(
-        Sd=driver.Sd,
-        Bl=driver.Bl,
-        Re=driver.Re / n,
-        Le=driver.Le / n,
-        le2_h=(None if driver.le2_h is None else driver.le2_h / n),
-        re2_ohm=(None if driver.re2_ohm is None else driver.re2_ohm / n),
-        Mms=moving_mass,
-        Cms=driver.Cms,
-        Rms=driver.Rms,
-    )
-    s = 1j * omega
-    z_e = electrical_driver.blocked_electrical_impedance(omega, Rg=Rg)
-    z_em = driver.Bl ** 2 / (sd_eff ** 2 * z_e)
-    z_drv = ras_eff + s * mas_eff + 1.0 / (s * cas_eff) + z_em
-    p_g = driver.Bl * voltage / (sd_eff * z_e)
-    return _ParallelDriverTerms(
-        sd_eff, mas_eff, cas_eff, ras_eff, electrical_driver, z_e, z_em, z_drv, p_g,
-    )
-
-
-def _electrical_input_impedance(z_e_blocked, bl, sd_eff, z_motional):
-    """Excitation-independent input impedance with caller-selected Rg reporting."""
-    return z_e_blocked + bl ** 2 / (sd_eff ** 2 * z_motional)
 
 
 # ---------------------------------------------------------------------------
@@ -452,7 +407,9 @@ def simulate(
         U_pr = p_r / Z_port_r
     """
     driver = driver.derive(rho=rho, c=c)
+    n = driver.n_drivers
     omega = 2 * math.pi * freq
+    s = 1j * omega
 
     # n parallel-wired identical drivers, treated as one equivalent
     # super-driver referred to combined Sd_eff = n·Sd.
@@ -471,12 +428,27 @@ def simulate(
     # Z_e→Z_e_eff:
     #   p_g  = Bl·v_g / (Sd_eff·Z_e_eff)
     #   Z_em = Bl²    / (Sd_eff²·Z_e_eff)
-    terms = _parallel_driver_terms(
-        driver, omega, moving_mass=driver.Mms, voltage=v_g, Rg=Rg,
-    )
-    Sd_eff = terms.sd_eff
+    Sd_eff = driver.Sd * n
+    Mas_eff = driver.Mms / (n * driver.Sd ** 2)
+    Cas_eff = n * driver.Cms * driver.Sd ** 2
+    Ras_eff = driver.Rms / (n * driver.Sd ** 2)
     Bl = driver.Bl
-    Z_e = terms.z_e
+
+    d_eff = Driver(
+        Sd=driver.Sd,
+        Bl=driver.Bl,
+        Re=driver.Re / n,
+        Le=driver.Le / n,
+        le2_h=(None if driver.le2_h is None else driver.le2_h / n),
+        re2_ohm=(None if driver.re2_ohm is None else driver.re2_ohm / n),
+        Mms=driver.Mms,
+        Cms=driver.Cms,
+        Rms=driver.Rms,
+    )
+    Z_e = d_eff.blocked_electrical_impedance(omega, Rg=Rg)
+    Z_em = (Bl ** 2) / (Sd_eff ** 2 * Z_e)
+    Z_drv = Ras_eff + s * Mas_eff + 1.0 / (s * Cas_eff) + Z_em
+    p_g = (Bl * v_g) / (Sd_eff * Z_e)
 
     Z_load_f, Z_port_f = _chamber_impedances(
         front_chamber, omega, rho=rho, c=c,
@@ -485,8 +457,7 @@ def simulate(
         rear_chamber, omega, rho=rho, c=c,
     )
 
-    Z_total = terms.z_drv + Z_load_f + Z_load_r
-    Ud = terms.p_g / Z_total
+    Ud = p_g / (Z_drv + Z_load_f + Z_load_r)
 
     if Z_port_f is not None:
         U_pf = Z_load_f * Ud
@@ -536,17 +507,10 @@ def simulate(
     spl_total = _spl_db(p_total)
     phase_total = np.degrees(np.angle(p_total))
 
-    # At zero drive V/I is 0/0; use the excitation-independent network
-    # impedance. Retain the existing nonzero-drive arithmetic for exact
-    # numerical compatibility. Bandpass reports impedance including Rg.
-    if v_g == 0:
-        Z_elec = _electrical_input_impedance(
-            Z_e, Bl, Sd_eff, Z_total - terms.z_em,
-        )
-    else:
-        v_cone = Ud / Sd_eff
-        current = (v_g - Bl * v_cone) / Z_e
-        Z_elec = v_g / current
+    # Electrical impedance: V/I including back-EMF.
+    v_cone = Ud / Sd_eff
+    I = (v_g - Bl * v_cone) / Z_e
+    Z_elec = v_g / I
 
     # Cone excursion at v_g drive: |x| = |U_d| / (Sd_eff · ω)
     x_peak_mm = np.abs(Ud) / (Sd_eff * omega) * 1000.0

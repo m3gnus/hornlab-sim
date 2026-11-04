@@ -8,7 +8,7 @@ end-to-end when the native runtime is available.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, fields, replace
+from dataclasses import dataclass, field
 from types import SimpleNamespace
 
 import numpy as np
@@ -31,16 +31,8 @@ class _FakeVelocityMode:
 @dataclass
 class _FakeConfig:
     mesh_scale: float = 1.0
-    mesh_validate: bool = True
-    mesh_merge_tol: float = 1e-8
-    mesh_repair_normals: bool = False
-    native_symmetry_plane: str | None = None
-    aperture_tag: int = 2
     velocity_mode: str = _FakeVelocityMode.ACCELERATION
     velocity_sources: dict[int, complex] = field(default_factory=dict)
-    on_frequency_result: object = None
-    progress_callback: object = None
-    velocity_source_callback: object = None
 
 
 @dataclass
@@ -53,9 +45,6 @@ class _FakeSolveResult:
     solver_log: list[dict] = field(default_factory=list)
     surface_pressure_avg: dict[int, np.ndarray] | None = None
     surface_pressure_complex: np.ndarray | None = None
-    surface_neumann_complex: np.ndarray | None = None
-    radiated_power_surface_w: np.ndarray | None = None
-    radiated_power_sphere_w: np.ndarray | None = None
     sphere_pressure_complex: np.ndarray | None = None
     sphere_points: np.ndarray | None = None
     sphere_theta_deg: np.ndarray | None = None
@@ -111,90 +100,6 @@ def _fake_unit_square_mesh():
     physical_tags = np.array([2, 3], dtype=np.int32)
     info = SimpleNamespace(n_triangles=2)
     return SimpleNamespace(grid=grid, physical_tags=physical_tags, info=info)
-
-
-@pytest.mark.parametrize("stop_value, stop_at, completed", [
-    (False, 100.0, 1), (False, 200.0, 2), (None, 200.0, 3), (0, 200.0, 3),
-])
-def test_outer_sweep_callbacks_use_global_indices_and_honor_exact_false(
-    monkeypatch, stop_value, stop_at, completed,
-):
-    calls, callbacks, progress = [], [], []
-
-    def backend(mesh, freqs, config):
-        done = []
-        for index, frequency in enumerate(freqs):
-            calls.append(frequency)
-            done.append(frequency)
-            if config.progress_callback is not None:
-                config.progress_callback(index, len(freqs), frequency)
-            if config.on_frequency_result is not None:
-                if config.on_frequency_result(index, frequency, {"done": frequency}) is False:
-                    break
-        return _fake_solve_result(freqs=done)
-
-    def on_result(index, frequency, entry):
-        callbacks.append((index, frequency, entry))
-        return stop_value if frequency == stop_at else None
-
-    api = _patch_metal_api(monkeypatch, backend)
-    api.solve_multi_source = lambda *args: pytest.fail("callbacks require sequential route")
-    config = _FakeConfig(
-        on_frequency_result=on_result,
-        progress_callback=lambda *args: progress.append(args),
-    )
-    freqs = np.array([100.0, 200.0, 300.0])
-    result = lem_to_bem.solve(
-        _fake_unit_square_mesh(), {"a": np.ones(3)}, {"a": [2]}, freqs, config,
-    )
-    expected = list(freqs[:completed])
-    assert calls == expected
-    assert callbacks == [(i, f, {"done": f}) for i, f in enumerate(expected)]
-    assert progress == [(i, 3, f) for i, f in enumerate(expected)]
-    np.testing.assert_array_equal(result.frequencies_hz, expected)
-    assert result.pressure_complex.shape[0] == completed
-    assert len(result.solver_log[-1]["lem_to_bem"]) == completed
-    assert config.on_frequency_result is on_result
-
-
-def test_velocity_callback_conflict_rejected_before_backend_or_mesh_loading(monkeypatch):
-    def forbidden(*args, **kwargs):
-        pytest.fail("conflicting source owners must be rejected before backend work")
-
-    api = _patch_metal_api(monkeypatch, forbidden)
-    api.load_mesh = forbidden
-    config = _FakeConfig(velocity_source_callback=lambda frequency: {2: 7j})
-    with pytest.raises(ValueError, match="velocity_source_callback.*remove"):
-        lem_to_bem.solve("mesh.msh", {"a": np.array([1.0])}, {"a": [2]},
-                         np.array([100.0]), config)
-    assert config.velocity_source_callback(100.0) == {2: 7j}
-
-
-@pytest.mark.parametrize("path_input", [True, False])
-def test_path_mesh_forwards_loader_options_and_preloaded_mesh_is_unchanged(
-    monkeypatch, tmp_path, path_input,
-):
-    mesh = _fake_unit_square_mesh()
-    loads = []
-
-    def backend(loaded, freqs, config):
-        assert loaded is mesh
-        return _fake_solve_result(freqs=freqs)
-
-    api = _patch_metal_api(monkeypatch, backend)
-    def loader(path, **kwargs):
-        loads.append((path, kwargs))
-        return mesh
-    api.load_mesh = loader
-    config = _FakeConfig(mesh_scale=0.001, mesh_validate=False,
-                         mesh_merge_tol=0.002, mesh_repair_normals=True,
-                         native_symmetry_plane="xz", aperture_tag=3)
-    path = tmp_path / "external.msh"
-    lem_to_bem.solve(path if path_input else mesh, {"a": np.ones(1)}, {"a": [2]},
-                     np.array([100.0]), config)
-    assert loads == ([(path, dict(scale=0.001, validate=False, merge_tol=0.002,
-                                 repair_normals=True, native_symmetry_plane="xz",
-                                 aperture_tag=3))] if path_input else [])
 
 
 # ---------------------------------------------------------------------------
@@ -1118,121 +1023,6 @@ def test_concat_results_rejects_different_sphere_geometry():
 
     with pytest.raises(ValueError, match="sphere geometry"):
         _concat_results([r1, r2], frequencies_hz=[100.0, 200.0])
-
-
-@pytest.mark.parametrize(
-    "name",
-    ["surface_neumann_complex", "radiated_power_surface_w", "radiated_power_sphere_w"],
-)
-def test_concat_results_preserves_every_frequency_row(name):
-    results = [_fake_solve_result([frequency]) for frequency in (100.0, 200.0)]
-    values = (
-        [np.array([[3j, 4j]]), np.array([[6j, 8j]])]
-        if name == "surface_neumann_complex"
-        else [np.array([5.0]), np.array([20.0])]
-    )
-    for result, value in zip(results, values):
-        setattr(result, name, value)
-
-    combined = _concat_results(results, [100.0, 200.0])
-
-    np.testing.assert_array_equal(getattr(combined, name), np.concatenate(values))
-    assert getattr(combined, name).shape[0] == combined.frequencies_hz.size
-
-
-@pytest.mark.parametrize(
-    "name",
-    ["surface_neumann_complex", "radiated_power_surface_w", "radiated_power_sphere_w"],
-)
-def test_concat_results_rejects_partially_missing_physical_fields(name):
-    results = [_fake_solve_result([frequency]) for frequency in (100.0, 200.0)]
-    setattr(results[0], name, np.array([1.0]))
-
-    with pytest.raises(ValueError, match=name):
-        _concat_results(results, [100.0, 200.0])
-
-
-def _combine_test_basis(results, weights):
-    return lem_to_bem._combine_basis_results(
-        results,
-        np.asarray(weights, dtype=complex),
-        results[0].frequencies_hz,
-        combined_config=_FakeConfig(),
-        aperture_indices={str(index): index for index in range(len(results))},
-        tag_owners={index + 2: str(index) for index in range(len(results))},
-    )
-
-
-def test_basis_combination_weights_neumann_traces_like_pressure():
-    results = [_fake_solve_result([100.0, 200.0]) for _ in range(2)]
-    for index, result in enumerate(results):
-        result.surface_pressure_complex = np.array([[1.0, 2j], [2.0, 3j]]) * (index + 1)
-        result.surface_neumann_complex = np.array([[3j, 4j], [5j, 6j]]) * (index + 1)
-        result.solver_log = [{"frequency_hz": f} for f in result.frequencies_hz]
-    weights = np.array([[2.0, 0.0], [1j, -0.5]])
-    original = [result.surface_neumann_complex.copy() for result in results]
-
-    combined = _combine_test_basis(results, weights)
-
-    np.testing.assert_allclose(
-        combined.surface_neumann_complex,
-        [[6j, 8j], [-5.0 - 5j, -6.0 - 6j]],
-    )
-    np.testing.assert_allclose(
-        combined.surface_pressure_complex,
-        [[2.0, 4j], [-2.0 + 2j, -3.0 - 3j]],
-    )
-    for result, before in zip(results, original):
-        np.testing.assert_array_equal(result.surface_neumann_complex, before)
-
-
-@pytest.mark.parametrize("weights", [[[2.0, 0.0]], [[1.0, 1.0]], [[1.0, -1.0]]])
-def test_basis_combination_does_not_inherit_or_sum_basis_power(weights):
-    # Identical bases reinforce or cancel; their separate powers omit cross terms.
-    result = _fake_solve_result([100.0])
-    result.pressure_complex[:] = 1.0
-    result.radiated_power_surface_w = np.array([5.0])
-    result.radiated_power_sphere_w = np.array([7.0])
-    result.solver_log = [{"frequency_hz": 100.0}]
-
-    combined = _combine_test_basis([result, replace(result)], weights)
-
-    np.testing.assert_allclose(combined.pressure_complex, sum(weights[0]))
-    assert combined.radiated_power_surface_w is None
-    assert combined.radiated_power_sphere_w is None
-    np.testing.assert_array_equal(result.radiated_power_surface_w, [5.0])
-
-
-def test_basis_combination_rejects_partially_missing_neumann_traces():
-    result = _fake_solve_result([100.0])
-    result.solver_log = [{"frequency_hz": 100.0}]
-    other = replace(result, surface_neumann_complex=np.array([[3j]]))
-
-    with pytest.raises(ValueError, match="surface_neumann_complex"):
-        _combine_test_basis([result, other], [[1.0, 1.0]])
-
-
-@pytest.mark.parametrize("aggregation", ["concat", "basis"])
-def test_result_aggregation_refuses_unclassified_fields(aggregation):
-    @dataclass
-    class ExtendedResult(_FakeSolveResult):
-        new_physical_field: np.ndarray | None = None
-
-    result = _fake_solve_result([100.0])
-    extended = ExtendedResult(**{item.name: getattr(result, item.name) for item in fields(result)})
-    extended.solver_log = [{"frequency_hz": 100.0}]
-    with pytest.raises(ValueError, match="new_physical_field"):
-        if aggregation == "concat":
-            _concat_results([extended], [100.0])
-        else:
-            _combine_test_basis([extended], [[2.0]])
-
-
-def test_result_aggregation_covers_native_result_schema():
-    native = pytest.importorskip("hornlab_metal_bem.result")
-    declared = {item.name for item in fields(native.SolveResult)}
-
-    assert declared == lem_to_bem._AGGREGATED_RESULT_FIELDS | lem_to_bem._SHARED_RESULT_FIELDS
 
 
 # ---------------------------------------------------------------------------

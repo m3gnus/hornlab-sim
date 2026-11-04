@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 import math
 from typing import Any, NamedTuple
 
@@ -246,28 +246,45 @@ def _solve_voltage_driven_driver(
         rho,
     )
 
-    terms = bandpass._parallel_driver_terms(
-        replace(derived, n_drivers=n, Sd=sd, Bl=bl, Cms=cms, Rms=rms),
-        omega, moving_mass=mmd_eff, voltage=drive_voltage_v, Rg=rg_ohm,
+    s = 1j * omega
+    sd_eff = n * sd
+    mas_eff = mmd_eff / (n * sd ** 2)
+    cas_eff = n * cms * sd ** 2
+    ras_eff = rms / (n * sd ** 2)
+
+    d_eff = bandpass.Driver(
+        Sd=sd,
+        Bl=bl,
+        Re=derived.Re / n,
+        Le=derived.Le / n,
+        le2_h=(None if derived.le2_h is None else derived.le2_h / n),
+        re2_ohm=(None if derived.re2_ohm is None else derived.re2_ohm / n),
+        Mms=mmd_eff,
+        Cms=cms,
+        Rms=rms,
     )
-    z_e_blocked = terms.electrical_driver.blocked_electrical_impedance(omega, Rg=0.0)
-    z_total = terms.z_drv + acoustic_load
-    cone_velocity = terms.p_g / z_total
-    electrical_input = bandpass._electrical_input_impedance(
-        z_e_blocked, bl, terms.sd_eff, z_total - terms.z_em,
+    z_e = d_eff.blocked_electrical_impedance(omega, Rg=rg_ohm)
+    z_e_blocked = d_eff.blocked_electrical_impedance(omega, Rg=0.0)
+    z_em = bl ** 2 / (sd_eff ** 2 * z_e)
+    z_drv = ras_eff + s * mas_eff + 1.0 / (s * cas_eff) + z_em
+    p_g = bl * drive_voltage_v / (sd_eff * z_e)
+    z_total = z_drv + acoustic_load
+    cone_velocity = p_g / z_total
+    electrical_input = z_e_blocked + bl ** 2 / (
+        sd_eff ** 2 * (z_total - z_em)
     )
-    cone_excursion = np.abs(cone_velocity) / (omega * terms.sd_eff)
+    cone_excursion = np.abs(cone_velocity) / (omega * sd_eff)
 
     diagnostics: dict[str, Any] = {
-        "blocked_electrical_impedance_with_rg": terms.z_e,
+        "blocked_electrical_impedance_with_rg": z_e,
         "blocked_electrical_impedance_ohm": z_e_blocked,
-        "electromechanical_impedance": terms.z_em,
-        "driver_acoustic_impedance": terms.z_drv,
+        "electromechanical_impedance": z_em,
+        "driver_acoustic_impedance": z_drv,
         **load_diagnostics,
-        "sd_eff_m2": terms.sd_eff,
-        "mas_eff": terms.mas_eff,
-        "cas_eff": terms.cas_eff,
-        "ras_eff": terms.ras_eff,
+        "sd_eff_m2": sd_eff,
+        "mas_eff": mas_eff,
+        "cas_eff": cas_eff,
+        "ras_eff": ras_eff,
         "mmd_eff_kg": mmd_eff,
         "mmd_source": mmd_source,
         "mmd_correction_fraction": (
