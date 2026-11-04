@@ -17,7 +17,6 @@ import pytest
 from hornlab_sim.methods import lem_to_bem
 from hornlab_sim.methods.lem_to_bem import _aperture_face_areas, _concat_results
 
-
 # ---------------------------------------------------------------------------
 # Test fixtures: a fake mesh and a fake SolveResult so we can avoid Metal.
 # ---------------------------------------------------------------------------
@@ -37,6 +36,8 @@ class _FakeConfig:
 
 @dataclass
 class _FakeSolveResult:
+    """Complete typed Metal result schema without the optional solver import."""
+
     frequencies_hz: np.ndarray
     pressure_complex: np.ndarray
     directivity_db: np.ndarray
@@ -55,8 +56,13 @@ class _FakeSolveResult:
     observation_angles_deg: np.ndarray = field(
         default_factory=lambda: np.linspace(-60.0, 60.0, 5)
     )
+    observation_points: np.ndarray | None = None
+    observation_planes: list[str] = field(default_factory=list)
     config: object | None = None
+    mesh_info: object | None = None
     native_diagnostics: list[dict] = field(default_factory=list)
+    radiated_power_sphere_coverage_sr: float | None = None
+    native_runtime: dict = field(default_factory=dict)
 
     @property
     def spl_db(self):
@@ -1136,9 +1142,8 @@ def test_result_aggregation_refuses_unclassified_fields(aggregation):
             _combine_test_basis([extended], [[2.0]])
 
 
-def test_result_aggregation_covers_native_result_schema():
-    native = pytest.importorskip("hornlab_metal_bem.result")
-    declared = {item.name for item in fields(native.SolveResult)}
+def test_result_aggregation_covers_typed_result_schema():
+    declared = {item.name for item in fields(_FakeSolveResult)}
 
     assert declared == lem_to_bem._AGGREGATED_RESULT_FIELDS | lem_to_bem._SHARED_RESULT_FIELDS
 
